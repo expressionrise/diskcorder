@@ -8,7 +8,7 @@
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
-  "author": "Dawid Polakowski",
+  "author": "expressionrise",
   "license": "MIT",
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",

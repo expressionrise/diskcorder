@@ -127,4 +127,4 @@ By contributing you agree your work is licensed under the project's MIT license.
 
 ## License
 
-[MIT](LICENSE) © Dawid Polakowski
+[MIT](LICENSE) © expressionrise

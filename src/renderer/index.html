@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diskcorder</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Diskcorder</span>
+    </div>
+    <div class="search">
+      <input id="search-input" type="search"
+             placeholder="Search every drive — names, notes, aliases…"
+             autocomplete="off" />
+    </div>
+    <button id="map-drive" class="btn btn-primary">Map a drive</button>
+  </header>
+
+  <main class="layout">
+    <!-- Drives rail -->
+    <aside class="rail" id="rail">
+      <div class="rail-head">Drives</div>
+      <ul id="volumes" class="volume-list"></ul>
+      <div id="rail-empty" class="rail-empty">
+        No drives mapped yet. Plug one in and hit <strong>Map a drive</strong>.
+      </div>
+    </aside>
+
+    <!-- Browser -->
+    <section class="browser">
+      <nav id="breadcrumb" class="breadcrumb"></nav>
+      <div id="listing" class="listing"></div>
+      <div id="listing-empty" class="listing-empty hidden">Select a drive to start browsing.</div>
+    </section>
+
+    <!-- Detail -->
+    <aside class="detail" id="detail">
+      <div class="detail-empty" id="detail-empty">Pick a file or folder to add notes and a rename.</div>
+      <div class="detail-body hidden" id="detail-body">
+        <div class="detail-icon" id="detail-icon"></div>
+        <div class="detail-name" id="detail-name"></div>
+        <div class="detail-path" id="detail-path"></div>
+        <dl class="detail-meta" id="detail-meta"></dl>
+
+        <label class="field-label" for="alias-input">Rename (label only — safe offline)</label>
+        <input id="alias-input" class="field" type="text" placeholder="e.g. Devon trip raw footage" />
+
+        <label class="field-label" for="note-input">Notes</label>
+        <textarea id="note-input" class="field" rows="6"
+                  placeholder="What's in here, what you used it for, what to keep…"></textarea>
+
+        <div class="danger-zone">
+          <button id="real-rename" class="btn btn-ghost-danger">Rename on disk…</button>
+          <span class="danger-hint">Changes the real file. Drive must be connected.</span>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Name-drive modal -->
+  <div class="modal-backdrop hidden" id="name-modal">
+    <div class="modal">
+      <h2 id="name-modal-title">Name this drive</h2>
+      <p id="name-modal-sub" class="modal-sub"></p>
+      <input id="name-modal-input" class="field" type="text" />
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="name-modal-cancel">Cancel</button>
+        <button class="btn btn-primary" id="name-modal-confirm">Map it</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scan overlay -->
+  <div class="scan-overlay hidden" id="scan-overlay">
+    <div class="scan-card">
+      <div class="spinner"></div>
+      <div class="scan-title">Mapping drive…</div>
+      <div class="scan-count" id="scan-count">0 items</div>
+      <div class="scan-current" id="scan-current"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

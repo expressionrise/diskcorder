@@ -11,18 +11,21 @@ const path = require('path');
  *
  * @param {string} rootPath
  * @param {(count:number, current:string)=>void} onProgress
+ * @returns {Promise<{entries:object[], skipped:number}>}
  */
 async function scan(rootPath, onProgress) {
   const entries = [];
   let nextId = 1;
   let count = 0;
+  let skipped = 0; // dirs/files we couldn't read (permissions, too-long paths…)
 
   async function walk(dirPath, relPath, parentTempId) {
     let dirents;
     try {
       dirents = await fsp.readdir(dirPath, { withFileTypes: true });
     } catch {
-      return; // unreadable directory — skip rather than abort the whole scan
+      skipped += 1; // unreadable directory — skip rather than abort the whole scan
+      return;
     }
 
     dirents.sort((a, b) => {
@@ -42,12 +45,15 @@ async function scan(rootPath, onProgress) {
 
       let size = 0;
       let mtime = null;
-      try {
-        const st = await fsp.stat(full);
-        size = st.size;
-        mtime = st.mtime.toISOString();
-      } catch {
-        // permission denied / vanished file — record it with zeros
+      // Only stat files — directories don't need a size and we force it to 0.
+      if (!isDir) {
+        try {
+          const st = await fsp.stat(full);
+          size = st.size;
+          mtime = st.mtime.toISOString();
+        } catch {
+          skipped += 1; // permission denied / vanished file — record it with zeros
+        }
       }
 
       const tempId = nextId++;
@@ -71,7 +77,7 @@ async function scan(rootPath, onProgress) {
 
   await walk(rootPath, '', null);
   if (onProgress) onProgress(count, '');
-  return entries;
+  return { entries, skipped };
 }
 
 module.exports = { scan };

@@ -25,36 +25,59 @@ notes and aliases, in a single local database. Nothing leaves your machine.
 ## Features
 
 - **Offline catalog** — full file/folder tree per drive, browsable while the drive
-  is disconnected.
+  is disconnected. Drives show a **connected / offline** badge in real time.
 - **Cross-drive search** — search names, notes, and aliases across every mapped
-  drive at once; results show which drive and where.
+  drive at once; results show which drive and where. Toggle "this drive" to scope it.
+- **Video thumbnails + hover preview** — every video gets a still thumbnail and a
+  short ~10-second clip sampled across the whole file. Hover a thumbnail (in the
+  list or the detail pane) and it plays the preview in place. Generate them per
+  file on demand, or in a background batch for a whole drive.
 - **Notes** — jot down what's in a folder, what you used it for, what to keep.
 - **Virtual rename (alias)** — give a file a friendly label without touching the
   disk. Safe offline; the real filename is preserved.
 - **Real rename** — when the drive is connected, rename the actual file/folder on
-  disk from inside the app.
+  disk from inside the app. Renaming a folder reconciles its descendants in the
+  catalog automatically.
+- **Copy / move between drives** — send a file or folder to another connected
+  drive with a confirm step, live progress, cancel, and conflict handling
+  (keep both / replace / skip). Streamed, so multi-GB files are fine.
 - **Re-scan that remembers** — re-mapping a drive preserves your notes and aliases
   by matching paths.
 
 ## Install
 
-Diskcorder uses [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3), a
-native module that must be compiled against Electron's Node version.
+Diskcorder uses [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) (a
+native module compiled against Electron's Node version) and bundles
+[`ffmpeg-static`](https://github.com/eugeneware/ffmpeg-static) for video previews.
 
 ```bash
-npm install   # runs electron-rebuild for better-sqlite3 automatically (postinstall)
+npm install   # postinstall rebuilds better-sqlite3 for Electron
 npm start
 ```
 
-If `better-sqlite3` complains on first run (a native-module mismatch), rebuild it
-once — this is the only real gotcha with the stack:
+**Requirements / gotchas:**
+
+- **Node ≥ 22.12** (or 23+). Electron 42's installer loads an ES-module dependency
+  via `require()`, which only works on Node 22.12+. On older Node you'll see
+  `Electron failed to install correctly`; either upgrade Node or run the install with
+  `NODE_OPTIONS=--experimental-require-module`.
+- **Behind a TLS-inspecting corporate proxy?** `ffmpeg-static` and Electron download
+  binaries over HTTPS and may fail with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. Point Node
+  at your OS trust store: set `NODE_EXTRA_CA_CERTS` to a PEM bundle of your trusted
+  roots before `npm install`.
+- A C/C++ toolchain is needed to build `better-sqlite3` (on Windows, the
+  "Desktop development with C++" workload). If it complains on first run:
+  `npm run rebuild`.
+- **ffmpeg is optional at runtime.** If no ffmpeg is found, the app still runs —
+  video preview generation is simply disabled.
+
+### Building a Windows installer
 
 ```bash
-npm run rebuild
+npm run dist     # electron-builder → NSIS installer in dist/ (ffmpeg bundled)
 ```
 
-> Building native modules needs a C/C++ toolchain (on Windows, the
-> "Desktop development with C++" workload or `windows-build-tools`).
+The app icon is generated from `scripts/make-icon.js` (`node scripts/make-icon.js`).
 
 ## How it works
 
@@ -81,9 +104,16 @@ npm run rebuild
 - **`src/db.js`** — the SQLite schema (`volumes`, `entries`) and all queries.
   `replaceVolume` re-scans a drive atomically and re-attaches existing notes and
   aliases by relative path.
+- **`src/thumbs.js`** — locates a bundled/system ffmpeg and generates video
+  thumbnails and short preview clips. Previews are cached on disk under `userData`
+  (keyed by volume + entry id, never in the DB) and served to the renderer through a
+  sandboxed `thumbcache://` protocol, so the real filesystem path is never exposed.
+- **`src/transfer.js`** — streamed copy/move between drives via `stream.pipeline`,
+  with byte-level progress, abort/cancel, partial-file cleanup, and conflict
+  resolution. Used for cross-volume moves that `fs.rename` can't do.
 - **`src/preload.js`** — the only bridge between renderer and main. It exposes a
-  small, explicit `window.api`. The renderer runs with `contextIsolation: true` and
-  `nodeIntegration: false`, so it can never touch Node directly.
+  small, explicit `window.api`. The renderer runs with `contextIsolation: true`,
+  `nodeIntegration: false`, and `sandbox: true`, so it can never touch Node directly.
 - **`src/renderer/`** — a dependency-free three-pane UI (drives rail · file
   browser · detail pane). No framework, no build step. Theming is entirely CSS
   variables in `styles.css`.
@@ -100,13 +130,14 @@ npm run rebuild
 
 ## Roadmap
 
-- **ffprobe/ffmpeg** — pull duration/resolution/codec for video files and cache a
-  thumbnail per clip.
-- **FTS5 search** — swap `LIKE` for SQLite full-text search for big catalogs.
+- **FTS5 / trigram search** — swap `LIKE` for SQLite full-text search for very large
+  catalogs (today's escaped `LIKE` keeps intuitive substring matching).
 - **Volume fingerprint** — detect a re-inserted drive by its volume serial instead
   of the saved root path.
-- **Folder rename reconciliation** — rewrite descendant relative paths when a
-  folder is renamed on disk (today a re-scan reconciles them).
+- **Video metadata** — surface duration/resolution/codec in the detail pane.
+- **Pick a destination subfolder** for copy/move (today it lands at the drive root).
+- **Live catalog sync on copy/move** — insert destination rows without needing a
+  re-scan.
 - **Export/import** — dump/restore the catalog as JSON, plus a "missing files since
   last scan" view.
 

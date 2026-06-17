@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' thumbcache: data:; media-src 'self' thumbcache:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Diskcorder</title>
   <link rel="stylesheet" href="styles.css" />
@@ -9,13 +11,28 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark"></span>
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="url(#bg)"/>
+          <circle cx="12" cy="12" r="6.2" fill="none" stroke="#0d1117" stroke-width="1.6" stroke-opacity="0.65"/>
+          <circle cx="12" cy="12" r="2.4" fill="#0d1117"/>
+          <circle cx="12" cy="12" r="9.1" fill="none" stroke="#fff" stroke-opacity="0.14" stroke-width="1"/>
+          <defs>
+            <linearGradient id="bg" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#d4af37"/><stop offset="1" stop-color="#54aeff"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </span>
       <span class="brand-name">Diskcorder</span>
     </div>
     <div class="search">
       <input id="search-input" type="search"
              placeholder="Search every drive — names, notes, aliases…"
              autocomplete="off" />
+      <label class="scope" title="Limit search to the open drive">
+        <input id="scope-toggle" type="checkbox" /> this drive
+      </label>
     </div>
     <button id="map-drive" class="btn btn-primary">Map a drive</button>
   </header>
@@ -41,6 +58,7 @@
     <aside class="detail" id="detail">
       <div class="detail-empty" id="detail-empty">Pick a file or folder to add notes and a rename.</div>
       <div class="detail-body hidden" id="detail-body">
+        <div class="detail-media hidden" id="detail-media"></div>
         <div class="detail-icon" id="detail-icon"></div>
         <div class="detail-name" id="detail-name"></div>
         <div class="detail-path" id="detail-path"></div>
@@ -53,6 +71,12 @@
         <textarea id="note-input" class="field" rows="6"
                   placeholder="What's in here, what you used it for, what to keep…"></textarea>
 
+        <label class="field-label">Transfer</label>
+        <div class="action-row">
+          <button id="copy-to" class="btn btn-ghost action">Copy to…</button>
+          <button id="move-to" class="btn btn-ghost action">Move to…</button>
+        </div>
+
         <div class="danger-zone">
           <button id="real-rename" class="btn btn-ghost-danger">Rename on disk…</button>
           <span class="danger-hint">Changes the real file. Drive must be connected.</span>
@@ -61,7 +85,10 @@
     </aside>
   </main>
 
-  <!-- Name-drive modal -->
+  <!-- Bottom ops drawer (transfers + preview generation) -->
+  <div id="ops-drawer" class="ops-drawer hidden"></div>
+
+  <!-- Name-drive / confirm modal -->
   <div class="modal-backdrop hidden" id="name-modal">
     <div class="modal">
       <h2 id="name-modal-title">Name this drive</h2>
@@ -70,6 +97,26 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" id="name-modal-cancel">Cancel</button>
         <button class="btn btn-primary" id="name-modal-confirm">Map it</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transfer (copy/move) modal -->
+  <div class="modal-backdrop hidden" id="xfer-modal">
+    <div class="modal">
+      <h2 id="xfer-title">Copy to drive</h2>
+      <p id="xfer-sub" class="modal-sub"></p>
+      <label class="field-label" for="xfer-dest">Destination drive</label>
+      <select id="xfer-dest" class="field"></select>
+      <label class="field-label">If something with the same name exists</label>
+      <div class="radio-row">
+        <label><input type="radio" name="xfer-conflict" value="keepboth" checked /> Keep both</label>
+        <label><input type="radio" name="xfer-conflict" value="replace" /> Replace</label>
+        <label><input type="radio" name="xfer-conflict" value="skip" /> Skip</label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="xfer-cancel">Cancel</button>
+        <button class="btn btn-primary" id="xfer-confirm">Copy</button>
       </div>
     </div>
   </div>

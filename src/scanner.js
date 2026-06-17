@@ -11,13 +11,26 @@ const path = require('path');
  *
  * @param {string} rootPath
  * @param {(count:number, current:string)=>void} onProgress
+ * @param {{isAborted:()=>boolean, waitWhilePaused:()=>Promise<void>}} [control]
+ *   Optional pause/cancel hooks. `isAborted()` truthy aborts the walk (throws
+ *   ScanAborted); `waitWhilePaused()` is awaited each step so a paused scan idles.
  * @returns {Promise<{entries:object[], skipped:number}>}
  */
-async function scan(rootPath, onProgress) {
+async function scan(rootPath, onProgress, control) {
   const entries = [];
   let nextId = 1;
   let count = 0;
   let skipped = 0; // dirs/files we couldn't read (permissions, too-long paths…)
+
+  async function checkControl() {
+    if (!control) return;
+    if (control.waitWhilePaused) await control.waitWhilePaused();
+    if (control.isAborted && control.isAborted()) {
+      const err = new Error('Scan canceled.');
+      err.code = 'SCAN_ABORTED';
+      throw err;
+    }
+  }
 
   async function walk(dirPath, relPath, parentTempId) {
     let dirents;
@@ -36,6 +49,7 @@ async function scan(rootPath, onProgress) {
     });
 
     for (const d of dirents) {
+      await checkControl(); // honour pause/cancel between entries
       // Never follow symlinks — avoids infinite loops on circular links.
       if (d.isSymbolicLink()) continue;
 

@@ -98,11 +98,12 @@ html, body {
   height: calc(100% - 52px);
   display: grid;
   grid-template-columns: 248px 1fr 320px;
+  grid-template-rows: minmax(0, 1fr);
 }
 .rail, .detail { background: var(--surface); }
 .rail { border-right: 1px solid var(--line); overflow-y: auto; }
 .detail { border-left: 1px solid var(--line); overflow-y: auto; }
-.browser { display: flex; flex-direction: column; min-width: 0; }
+.browser { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* ---- Drives rail ------------------------------------------------------ */
 .rail-head, .detail .field-label:first-of-type { user-select: none; }
@@ -251,12 +252,13 @@ html, body {
 
 /* ---- Volume card actions (revealed on hover) -------------------------- */
 .vol-actions {
-  display: flex; gap: 6px; margin-top: 10px;
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
   opacity: 0; max-height: 0; overflow: hidden;
   transition: opacity .12s ease;
 }
 .volume-card:hover .vol-actions,
-.volume-card.active .vol-actions { opacity: 1; max-height: 40px; }
+.volume-card.active .vol-actions { opacity: 1; max-height: 80px; }
+.vol-actions .mini { flex: 1 1 40%; }
 .mini {
   flex: 1; height: 24px; padding: 0 6px;
   font: inherit; font-size: 11px; font-weight: 550;
@@ -321,6 +323,29 @@ html, body {
 .media-hint svg { width: 26px; height: 26px; color: var(--text); opacity: .9; }
 .media-frame.loading .media-hint span::after { content: ' …'; }
 
+/* ---- Folder size emphasis -------------------------------------------- */
+.row .sz.sz-dir { color: var(--text-dim); }
+
+/* ---- Tags ------------------------------------------------------------- */
+.tags-box { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.tags-box:empty { display: none; }
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px; padding: 2px 6px 2px 9px;
+}
+.tag-x {
+  border: none; background: none; cursor: pointer;
+  color: var(--accent); font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.tag-x:hover { color: var(--danger); }
+
+/* ---- Scan overlay actions -------------------------------------------- */
+.scan-actions { display: flex; gap: 8px; justify-content: center; margin-top: 16px; }
+.scan-actions .btn { height: 30px; padding: 0 14px; }
+
 /* ---- Detail action buttons ------------------------------------------- */
 .action-row { display: flex; gap: 8px; }
 .btn.action { flex: 1; height: 32px; padding: 0 10px; font-size: 12.5px; }
@@ -350,8 +375,77 @@ select.field { height: 36px; padding: 0 10px; appearance: none; cursor: pointer;
   width: 22px; height: 22px; padding: 0; flex: none;
   background: transparent; border: none; cursor: pointer; color: var(--text-faint);
 }
+.op-ctl { flex: none; height: 24px; padding: 0 10px; font-size: 11.5px; }
 .op-cancel:hover { color: var(--danger); }
 .op-cancel svg { width: 18px; height: 18px; }
+
+/* ---- Browser tabs (Files | Space map) -------------------------------- */
+.tabbar {
+  display: flex; gap: 2px; padding: 6px 8px 0;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.tab {
+  height: 30px; padding: 0 14px; border: none; background: transparent;
+  color: var(--text-faint); font: inherit; font-weight: 550; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---- Reveal in Explorer button --------------------------------------- */
+.reveal-btn { width: 100%; height: 32px; font-size: 12.5px; margin-bottom: 4px; }
+
+/* ---- Duplicates tab -------------------------------------------------- */
+.dupes-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  font-size: 12.5px; color: var(--text-dim);
+}
+.dupes-controls { display: flex; align-items: center; gap: 12px; }
+.mini-btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.dupes-list { flex: 1; overflow-y: auto; padding: 10px 12px; }
+.dup-group {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  margin-bottom: 10px; overflow: hidden; background: var(--surface-2);
+}
+.dup-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px; background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
+  border-bottom: 1px solid var(--line);
+}
+.dup-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dup-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.dup-item {
+  display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+  border-top: 1px solid var(--line); cursor: pointer;
+}
+.dup-item:first-of-type { border-top: none; }
+.dup-item:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.dup-item.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.dup-loc { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.dup-vol { font-size: 12px; color: var(--text-dim); }
+.dup-path { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Space map (treemap) tab ----------------------------------------- */
+.tm-legend {
+  display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--text-faint);
+  padding: 8px 14px; border-top: 1px solid var(--line);
+}
+.tm-legend .lg { display: inline-flex; align-items: center; gap: 5px; text-transform: capitalize; }
+.tm-legend .lg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.tm-stage { position: relative; flex: 1; min-height: 0; background: var(--bg); }
+#tm-canvas { display: block; width: 100%; height: 100%; cursor: pointer; }
+.tm-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint); pointer-events: none; }
+.tm-tip {
+  position: fixed; z-index: 80; pointer-events: none;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 6px 9px; font-size: 12px; color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); max-width: 320px;
+}
+.tm-tip strong { font-weight: 600; word-break: break-all; }
 
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; }

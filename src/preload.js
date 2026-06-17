@@ -15,21 +15,36 @@ contextBridge.exposeInMainWorld('api', {
   deleteVolume: (id) => ipcRenderer.invoke('volumes:delete', id),
   renameVolume: (id, name) => ipcRenderer.invoke('volumes:rename', id, name),
   isReachable: (id) => ipcRenderer.invoke('volumes:reachable', id),
+  exportVolume: (id) => ipcRenderer.invoke('volumes:export', id),
+  importVolume: () => ipcRenderer.invoke('volumes:import'),
   pickDrive: () => ipcRenderer.invoke('drive:pick'),
   scanDrive: (payload) => ipcRenderer.invoke('drive:scan', payload),
+  pauseScan: () => ipcRenderer.invoke('drive:scanPause'),
+  resumeScan: () => ipcRenderer.invoke('drive:scanResume'),
+  cancelScan: () => ipcRenderer.invoke('drive:scanCancel'),
 
   // browsing
   getChildren: (volumeId, parentId) => ipcRenderer.invoke('entries:children', volumeId, parentId),
   getEntry: (id) => ipcRenderer.invoke('entries:get', id),
   setNote: (id, note) => ipcRenderer.invoke('entries:setNote', id, note),
   setAlias: (id, alias) => ipcRenderer.invoke('entries:setAlias', id, alias),
+  setTags: (id, tags) => ipcRenderer.invoke('entries:setTags', id, tags),
+  listTags: () => ipcRenderer.invoke('tags:list'),
   search: (term, volumeId) => ipcRenderer.invoke('entries:search', term, volumeId),
   realRename: (id, newName) => ipcRenderer.invoke('entries:realRename', id, newName),
+  realDelete: (id) => ipcRenderer.invoke('entries:realDelete', id),
+  findDuplicates: (volumeId) => ipcRenderer.invoke('entries:duplicates', volumeId),
+  revealInExplorer: (id) => ipcRenderer.invoke('entries:reveal', id),
 
-  // video thumbnails / previews
+  // space map (treemap)
+  getTreemap: (volumeId, parentId) => ipcRenderer.invoke('entries:treemap', volumeId, parentId),
+
+  // thumbnails / previews
   ensureThumb: (id) => ipcRenderer.invoke('thumbs:ensure', id),
-  generateThumbs: (volumeId) => ipcRenderer.invoke('thumbs:generate', volumeId),
+  generateThumbs: (volumeId, opts) => ipcRenderer.invoke('thumbs:generate', volumeId, opts),
   cancelThumbs: () => ipcRenderer.invoke('thumbs:cancel'),
+  pauseThumbs: () => ipcRenderer.invoke('thumbs:pause'),
+  resumeThumbs: () => ipcRenderer.invoke('thumbs:resume'),
   ffmpegReady: () => ipcRenderer.invoke('thumbs:ready'),
 
   // transfer (copy / move between drives)

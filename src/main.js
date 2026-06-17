@@ -1,9 +1,9 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, shell } = require('electron');
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
-const { pathToFileURL } = require('url');
 const db = require('./db');
 const scanner = require('./scanner');
 const thumbs = require('./thumbs');
@@ -76,16 +76,19 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => { db.close(); });
 
 // Serve cached thumbs/previews without exposing the userData path directly.
+const MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.mp4': 'video/mp4' };
 function registerThumbProtocol() {
   const root = path.normalize(thumbs.cacheDir);
-  protocol.handle('thumbcache', (request) => {
+  protocol.handle('thumbcache', async (request) => {
     try {
-      const u = new URL(request.url); // thumbcache://<volumeId>/<entryId>.<ext>
-      const rel = path.normalize(decodeURIComponent(u.hostname + u.pathname));
+      const u = new URL(request.url); // thumbcache://media/<volumeId>/<entryId>.<ext>
+      const rel = decodeURIComponent(u.pathname).replace(/^[\\/]+/, '');
       const file = path.normalize(path.join(root, rel));
       if (!file.startsWith(root)) return new Response('forbidden', { status: 403 });
-      if (!fs.existsSync(file)) return new Response('not found', { status: 404 });
-      return net.fetch(pathToFileURL(file).toString());
+      const data = await fsp.readFile(file).catch(() => null);
+      if (!data) return new Response('not found', { status: 404 });
+      const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
+      return new Response(data, { status: 200, headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' } });
     } catch {
       return new Response('bad request', { status: 400 });
     }
@@ -114,6 +117,35 @@ ipcMain.handle('volumes:reachable', (_e, id) => {
   return !!(vol && vol.root_path && fs.existsSync(vol.root_path));
 });
 
+ipcMain.handle('volumes:export', async (_e, id) => {
+  assertInt(id);
+  const data = db.exportVolume(id);
+  if (!data) return { ok: false, error: 'Drive not found.' };
+  const safe = (data.volume.name || 'drive').replace(/[\\/:*?"<>|]/g, '_');
+  const res = await dialog.showSaveDialog(win, {
+    title: 'Export drive catalog',
+    defaultPath: `${safe}.diskcorder.json`,
+    filters: [{ name: 'Diskcorder catalog', extensions: ['json'] }]
+  });
+  if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+  await fsp.writeFile(res.filePath, JSON.stringify(data), 'utf8');
+  return { ok: true, path: res.filePath, count: data.entries.length };
+});
+
+ipcMain.handle('volumes:import', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Import drive catalog',
+    properties: ['openFile'],
+    filters: [{ name: 'Diskcorder catalog', extensions: ['json'] }]
+  });
+  if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+  let data;
+  try { data = JSON.parse(await fsp.readFile(res.filePaths[0], 'utf8')); }
+  catch (e) { return { ok: false, error: 'Could not read that file: ' + e.message }; }
+  try { return { ok: true, volumeId: db.importVolume(data) }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+
 ipcMain.handle('drive:pick', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Choose a drive or folder to map',
@@ -131,6 +163,20 @@ function suggestName(root) {
   return path.basename(root) || root;
 }
 
+// Pause/cancel control for the in-flight scan.
+let scanControl = null;
+function makeScanControl() {
+  let paused = false, aborted = false, waiters = [];
+  const release = () => { waiters.forEach(r => r()); waiters = []; };
+  return {
+    pause()  { paused = true; },
+    resume() { paused = false; release(); },
+    cancel() { aborted = true; paused = false; release(); },
+    isAborted: () => aborted,
+    waitWhilePaused: () => paused ? new Promise(r => waiters.push(r)) : Promise.resolve()
+  };
+}
+
 ipcMain.handle('drive:scan', async (_e, { root, name, existingVolumeId }) => {
   assertStr(root, 'root');
   assertStr(name, 'name', 200);
@@ -138,19 +184,31 @@ ipcMain.handle('drive:scan', async (_e, { root, name, existingVolumeId }) => {
   if (!fs.existsSync(root)) {
     return { ok: false, error: `That path isn't reachable right now: ${root}` };
   }
-  const { entries, skipped } = await scanner.scan(root, (count, current) => {
-    send('scan:progress', { count, current });
-  });
-  const meta = {
-    name, root_path: root,
-    scanned_at: new Date().toISOString(),
-    file_count: 0, total_bytes: 0
-  };
-  // A re-scan invalidates the old volume id's thumb cache.
-  if (existingVolumeId) await thumbs.clearVolume(existingVolumeId);
-  const volumeId = db.replaceVolume(existingVolumeId || null, meta, entries);
-  return { ok: true, volumeId, skipped };
+  scanControl = makeScanControl();
+  try {
+    const { entries, skipped } = await scanner.scan(root, (count, current) => {
+      send('scan:progress', { count, current });
+    }, scanControl);
+    const meta = {
+      name, root_path: root,
+      scanned_at: new Date().toISOString(),
+      file_count: 0, total_bytes: 0
+    };
+    // A re-scan invalidates the old volume id's thumb cache.
+    if (existingVolumeId) await thumbs.clearVolume(existingVolumeId);
+    const volumeId = db.replaceVolume(existingVolumeId || null, meta, entries);
+    return { ok: true, volumeId, skipped };
+  } catch (err) {
+    if (err && err.code === 'SCAN_ABORTED') return { ok: false, canceled: true };
+    throw err;
+  } finally {
+    scanControl = null;
+  }
 });
+
+ipcMain.handle('drive:scanPause',  () => { if (scanControl) scanControl.pause();  return true; });
+ipcMain.handle('drive:scanResume', () => { if (scanControl) scanControl.resume(); return true; });
+ipcMain.handle('drive:scanCancel', () => { if (scanControl) scanControl.cancel(); return true; });
 
 // ---- IPC: browsing -------------------------------------------------------
 
@@ -209,17 +267,73 @@ ipcMain.handle('entries:realRename', (_e, id, newName) => {
   return { ok: true, isDir: !!entry.is_dir };
 });
 
-// ---- IPC: video thumbnails ----------------------------------------------
+// ---- IPC: delete on disk (drive must be connected) -----------------------
+
+ipcMain.handle('entries:realDelete', async (_e, id) => {
+  assertInt(id);
+  const entry = db.getEntry(id);
+  if (!entry) return { ok: false, error: 'Entry not found.' };
+  const vol = db.getVolume(entry.volume_id);
+  if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
+
+  const full = path.join(vol.root_path, entry.rel_path);
+  if (!fs.existsSync(full)) {
+    return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
+  }
+  try {
+    await fsp.rm(full, { recursive: !!entry.is_dir, force: true });
+  } catch (err) {
+    return { ok: false, error: `Delete failed: ${err.message}` };
+  }
+  await thumbs.removeEntry(entry.volume_id, id).catch(() => {});
+  db.deleteEntrySubtree(id); // drops the row (and descendants for folders)
+  return { ok: true, isDir: !!entry.is_dir };
+});
+
+// ---- IPC: reveal in Explorer ---------------------------------------------
+
+ipcMain.handle('entries:reveal', (_e, id) => {
+  assertInt(id);
+  const entry = db.getEntry(id);
+  if (!entry) return { ok: false, error: 'Entry not found.' };
+  const vol = db.getVolume(entry.volume_id);
+  if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
+  const full = path.join(vol.root_path, entry.rel_path);
+  if (!fs.existsSync(full)) {
+    return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
+  }
+  shell.showItemInFolder(full); // opens Explorer with the item selected
+  return { ok: true };
+});
+
+// ---- IPC: duplicates -----------------------------------------------------
+
+ipcMain.handle('entries:duplicates', (_e, volumeId) =>
+  db.findDuplicates(volumeId == null ? null : assertInt(volumeId, 'volumeId')));
+
+// ---- IPC: thumbnails (video + image) ------------------------------------
 
 let thumbAbort = null;
+let thumbGate = null;   // pause/resume gate for the batch generator
+function makePauseGate() {
+  let paused = false, waiters = [];
+  return {
+    get paused() { return paused; },
+    pause()  { paused = true; },
+    resume() { paused = false; waiters.forEach(r => r()); waiters = []; },
+    wait()   { return paused ? new Promise(r => waiters.push(r)) : Promise.resolve(); }
+  };
+}
+const kindOf = (ext) => thumbs.isVideo(ext) ? 'video' : (thumbs.isImage(ext) ? 'image' : null);
 
-ipcMain.handle('thumbs:ready', () => thumbs.ffmpegAvailable());
-
-// Generate (if missing) the thumb + preview for a single entry, on demand.
+// Generate (if missing) the thumb — plus a hover preview for videos — for one
+// entry, on demand (used on hover / selection).
 ipcMain.handle('thumbs:ensure', async (_e, id) => {
   assertInt(id);
   const entry = db.getEntry(id);
-  if (!entry || entry.is_dir || !thumbs.isVideo(entry.ext)) return { ok: false };
+  if (!entry || entry.is_dir) return { ok: false };
+  const kind = kindOf(entry.ext);
+  if (!kind) return { ok: false };
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'offline' };
   const src = path.join(vol.root_path, entry.rel_path);
@@ -228,55 +342,87 @@ ipcMain.handle('thumbs:ensure', async (_e, id) => {
   const ac = new AbortController();
   try {
     if (!(await thumbs.hasThumb(entry.volume_id, id))) {
-      await thumbs.generateThumb(src, entry.volume_id, id, ac.signal);
+      await thumbs.generateThumb(src, entry.volume_id, id, ac.signal, kind);
     }
-    if (!(await thumbs.hasPreview(entry.volume_id, id))) {
+    if (kind === 'video' && !(await thumbs.hasPreview(entry.volume_id, id))) {
       await thumbs.generatePreview(src, entry.volume_id, id, ac.signal);
     }
-    return { ok: true, volumeId: entry.volume_id };
+    return { ok: true, volumeId: entry.volume_id, kind };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-// Batch-generate for every reachable video in a volume (concurrency-limited).
-ipcMain.handle('thumbs:generate', async (_e, volumeId) => {
+ipcMain.handle('thumbs:ready', () => thumbs.ffmpegAvailable());
+
+// Batch-generate for every reachable media file in a volume (concurrency
+// limited). `previews` also builds the 10s hover clips for videos (slower).
+ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   assertInt(volumeId);
+  const previews = !!(opts && opts.previews);
   const vol = db.getVolume(volumeId);
   if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
     return { ok: false, error: 'Drive is not connected.' };
   }
-  const vids = db.getVideoEntries(volumeId, thumbs.VIDEO_EXTS);
-  if (!vids.length) return { ok: true, total: 0 };
+  const media = db.getMediaEntries(volumeId, thumbs.MEDIA_EXTS);
+  if (!media.length) return { ok: true, total: 0 };
 
   thumbAbort = new AbortController();
+  thumbGate = makePauseGate();
   const signal = thumbAbort.signal;
-  const total = vids.length;
+  const total = media.length;
   let done = 0;
 
   const worker = async (queue) => {
     while (queue.length && !signal.aborted) {
-      const v = queue.shift();
-      const src = path.join(vol.root_path, v.rel_path);
+      await thumbGate.wait();          // block here while paused
+      if (signal.aborted) break;
+      const m = queue.shift();
+      if (!m) break;
+      const kind = kindOf(m.ext);
+      const src = path.join(vol.root_path, m.rel_path);
       try {
-        if (fs.existsSync(src)) {
-          if (!(await thumbs.hasThumb(volumeId, v.id))) await thumbs.generateThumb(src, volumeId, v.id, signal);
-          if (!(await thumbs.hasPreview(volumeId, v.id))) await thumbs.generatePreview(src, volumeId, v.id, signal);
+        if (kind && fs.existsSync(src)) {
+          if (!(await thumbs.hasThumb(volumeId, m.id))) await thumbs.generateThumb(src, volumeId, m.id, signal, kind);
+          if (previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id))) {
+            await thumbs.generatePreview(src, volumeId, m.id, signal);
+          }
         }
       } catch { /* skip this one */ }
       done += 1;
-      send('thumbs:progress', { done, total, current: v.rel_path, volumeId });
+      send('thumbs:progress', { done, total, current: m.rel_path, volumeId });
     }
   };
 
-  const queue = vids.slice();
+  const queue = media.slice();
   await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
   send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
   thumbAbort = null;
+  thumbGate = null;
   return { ok: true, total, done, canceled: signal.aborted };
 });
 
-ipcMain.handle('thumbs:cancel', () => { if (thumbAbort) thumbAbort.abort(); return true; });
+ipcMain.handle('thumbs:cancel', () => { if (thumbAbort) thumbAbort.abort(); if (thumbGate) thumbGate.resume(); return true; });
+ipcMain.handle('thumbs:pause',  () => { if (thumbGate) thumbGate.pause();  return true; });
+ipcMain.handle('thumbs:resume', () => { if (thumbGate) thumbGate.resume(); return true; });
+
+// ---- IPC: tags -----------------------------------------------------------
+
+ipcMain.handle('tags:list', () => db.listTags());
+ipcMain.handle('entries:setTags', (_e, id, tags) => {
+  assertInt(id);
+  if (!Array.isArray(tags)) throw new Error('Invalid tags.');
+  const clean = [...new Set(tags
+    .map(t => String(t).trim())
+    .filter(t => t && t.length <= 60))].slice(0, 40);
+  db.setTags(id, clean);
+  return { ok: true, tags: clean };
+});
+
+// ---- IPC: space map (treemap) -------------------------------------------
+
+ipcMain.handle('entries:treemap', (_e, volumeId, parentId) =>
+  db.getTreemap(assertInt(volumeId), parentId == null ? null : assertInt(parentId, 'parentId')));
 
 // ---- IPC: transfer (copy / move between drives) --------------------------
 

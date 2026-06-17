@@ -5,7 +5,7 @@ const Database = require('better-sqlite3');
 let db = null;
 
 // Bump this whenever the schema changes and add a matching migration step.
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 function init(dbPath) {
   db = new Database(dbPath);
@@ -70,8 +70,31 @@ function runMigrations() {
     )`);
     v = 3;
   }
+  if (v < 4) {
+    // v4: recursive subtree size per entry (folders show how much they hold).
+    const cols = db.prepare(`PRAGMA table_info(entries)`).all();
+    if (!cols.some(c => c.name === 'tree_size')) db.exec(`ALTER TABLE entries ADD COLUMN tree_size INTEGER`);
+    backfillTreeSizes();
+    v = 4;
+  }
 
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
+// Compute subtree sizes for existing catalogs (new scans compute them inline).
+// Parents are inserted before children, so reverse-id order visits children
+// first and rolls their totals up into parents in a single pass.
+function backfillTreeSizes() {
+  const rows = db.prepare(`SELECT id, parent_id, size, is_dir FROM entries ORDER BY id`).all();
+  const acc = new Map();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    const own = (acc.get(r.id) || 0) + (r.is_dir ? 0 : r.size);
+    acc.set(r.id, own);
+    if (r.parent_id != null) acc.set(r.parent_id, (acc.get(r.parent_id) || 0) + own);
+  }
+  const upd = db.prepare(`UPDATE entries SET tree_size = ? WHERE id = ?`);
+  db.transaction(() => { for (const r of rows) upd.run(acc.get(r.id) || 0, r.id); })();
 }
 
 function close() {
@@ -158,6 +181,18 @@ const replaceVolume = (() => {
       db.prepare(`UPDATE volumes SET file_count = ?, total_bytes = ? WHERE id = ?`)
         .run(fileCount, totalBytes, volumeId);
 
+      // Roll file sizes up into folder subtree totals (children precede parents
+      // when iterating in reverse, since parents are emitted first).
+      const subtree = new Map();
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        const own = (subtree.get(r.tempId) || 0) + (r.isDir ? 0 : r.size);
+        subtree.set(r.tempId, own);
+        if (r.parentTempId != null) subtree.set(r.parentTempId, (subtree.get(r.parentTempId) || 0) + own);
+      }
+      const updTree = db.prepare(`UPDATE entries SET tree_size = ? WHERE id = ?`);
+      for (const r of rows) updTree.run(subtree.get(r.tempId) || 0, tempToReal.get(r.tempId));
+
       return volumeId;
     });
     return tx();
@@ -168,10 +203,21 @@ const replaceVolume = (() => {
 
 function getChildren(volumeId, parentId) {
   return db.prepare(`
-    SELECT id, name, rel_path, is_dir, size, mtime, ext, note, alias
+    SELECT id, name, rel_path, is_dir, size, tree_size, mtime, ext, note, alias, tags
     FROM entries
     WHERE volume_id = ? AND parent_id IS ?
     ORDER BY is_dir DESC, name COLLATE NOCASE
+  `).all(volumeId, parentId ?? null);
+}
+
+// Flat tree for the space-map view: everything under a parent (or the whole
+// volume when parentId is null), with subtree sizes for the treemap.
+function getTreemap(volumeId, parentId) {
+  return db.prepare(`
+    SELECT id, parent_id, name, is_dir, ext, size, tree_size
+    FROM entries
+    WHERE volume_id = ? AND parent_id IS ?
+    ORDER BY tree_size DESC
   `).all(volumeId, parentId ?? null);
 }
 
@@ -187,6 +233,63 @@ function getMediaEntries(volumeId, exts) {
     WHERE volume_id = ? AND is_dir = 0 AND ext IN (${placeholders})
     ORDER BY size DESC
   `).all(volumeId, ...exts);
+}
+
+// ---- Export / import a volume catalog (JSON) -----------------------------
+
+function exportVolume(volumeId) {
+  const volume = db.prepare(
+    `SELECT name, root_path, scanned_at, file_count, total_bytes FROM volumes WHERE id = ?`
+  ).get(volumeId);
+  if (!volume) return null;
+  const entries = db.prepare(
+    `SELECT id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, tree_size
+     FROM entries WHERE volume_id = ? ORDER BY id`
+  ).all(volumeId);
+  return { format: 'diskcorder-volume', version: 1, exported_at: new Date().toISOString(), volume, entries };
+}
+
+function importVolume(data) {
+  if (!data || data.format !== 'diskcorder-volume' || !Array.isArray(data.entries)) {
+    throw new Error('That file is not a Diskcorder catalog export.');
+  }
+  const v = data.volume || {};
+  const tx = db.transaction(() => {
+    const info = db.prepare(`
+      INSERT INTO volumes (name, root_path, scanned_at, file_count, total_bytes)
+      VALUES (@name, @root_path, @scanned_at, @file_count, @total_bytes)
+    `).run({
+      name: String(v.name || 'Imported drive'),
+      root_path: v.root_path || null,
+      scanned_at: v.scanned_at || new Date().toISOString(),
+      file_count: v.file_count || 0,
+      total_bytes: v.total_bytes || 0
+    });
+    const volumeId = info.lastInsertRowid;
+    const ins = db.prepare(`
+      INSERT INTO entries (volume_id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, tree_size)
+      VALUES (@volume_id, @parent_id, @name, @rel_path, @is_dir, @size, @mtime, @ext, @note, @alias, @tags, @tree_size)
+    `);
+    const vocab = db.prepare(`INSERT INTO tag_vocab (name, last_used) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET last_used = excluded.last_used`);
+    const now = new Date().toISOString();
+    const idMap = new Map();
+    // Parents are exported before children (ordered by id); ensure that here.
+    const rows = data.entries.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
+    for (const e of rows) {
+      const parent = e.parent_id == null ? null : (idMap.get(e.parent_id) ?? null);
+      const r = ins.run({
+        volume_id: volumeId, parent_id: parent,
+        name: String(e.name || ''), rel_path: String(e.rel_path || ''),
+        is_dir: e.is_dir ? 1 : 0, size: e.size || 0, mtime: e.mtime || null,
+        ext: e.ext || null, note: e.note || null, alias: e.alias || null,
+        tags: e.tags || null, tree_size: e.tree_size || 0
+      });
+      idMap.set(e.id, r.lastInsertRowid);
+      if (e.tags) { try { for (const t of JSON.parse(e.tags)) vocab.run(t, now); } catch { /* ignore bad tags */ } }
+    }
+    return volumeId;
+  });
+  return tx();
 }
 
 // ---- Tags ----------------------------------------------------------------
@@ -247,6 +350,28 @@ function escapeLike(s) {
   return s.replace(/[\\%_]/g, c => '\\' + c);
 }
 
+// Files that share an identical name + size with at least one other file
+// (a strong offline duplicate signal — content isn't hashed). Scans every
+// mapped drive by default, or a single volume when volumeId is given.
+function findDuplicates(volumeId) {
+  const scope = volumeId ? `AND volume_id = @v` : ``;
+  const outerScope = volumeId ? `WHERE e.volume_id = @v` : ``;
+  return db.prepare(`
+    WITH dups AS (
+      SELECT name, size FROM entries
+      WHERE is_dir = 0 AND size > 0 ${scope}
+      GROUP BY name, size HAVING COUNT(*) > 1
+    )
+    SELECT e.id, e.name, e.size, e.ext, e.volume_id, e.rel_path, v.name AS volume_name
+    FROM entries e
+    JOIN dups d ON d.name = e.name AND d.size = e.size
+    JOIN volumes v ON v.id = e.volume_id
+    ${outerScope}
+    ORDER BY e.size DESC, e.name COLLATE NOCASE, v.name COLLATE NOCASE
+    LIMIT 5000
+  `).all({ v: volumeId || null });
+}
+
 // Remove an entry and all of its descendants (used after a successful move).
 function deleteEntrySubtree(id) {
   const tx = db.transaction(() => {
@@ -281,7 +406,8 @@ function search(term, volumeId) {
 module.exports = {
   init, close,
   listVolumes, getVolume, deleteVolume, renameVolume, replaceVolume,
-  getChildren, getEntry, getMediaEntries,
+  getChildren, getTreemap, getEntry, getMediaEntries, findDuplicates,
+  exportVolume, importVolume,
   setNote, setAlias, setTags, listTags,
   applyRealRename, applyFolderRename, deleteEntrySubtree, search
 };

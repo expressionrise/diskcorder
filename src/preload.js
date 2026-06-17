@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('api', {
   ensureThumb: (id) => ipcRenderer.invoke('thumbs:ensure', id),
   generateThumbs: (volumeId, opts) => ipcRenderer.invoke('thumbs:generate', volumeId, opts),
   cancelThumbs: () => ipcRenderer.invoke('thumbs:cancel'),
+  pauseThumbs: () => ipcRenderer.invoke('thumbs:pause'),
+  resumeThumbs: () => ipcRenderer.invoke('thumbs:resume'),
   ffmpegReady: () => ipcRenderer.invoke('thumbs:ready'),
 
   // transfer (copy / move between drives)

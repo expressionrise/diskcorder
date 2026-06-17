@@ -1,4 +1,8 @@
-# Diskcorder
+<p align="center">
+  <img src="src/renderer/assets/icon.png" width="120" alt="Diskcorder icon" />
+</p>
+
+<h1 align="center">Diskcorder</h1>
 
 **Map your external drives once, then browse, annotate, and rename them offline.**
 A local-first Electron + SQLite disk cataloguer for creators with footage spread
@@ -34,7 +38,8 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   short ~10-second clip sampled across the whole file. Thumbnails are generated
   automatically in the background right after a scan; hover a thumbnail (in the list
   or the detail pane) and it plays the preview in place. The heavier hover clips are
-  built on demand, or for a whole drive via the **Previews** button.
+  built on demand, or for a whole drive via the **Previews** button. The background
+  batch can be **paused, resumed, or canceled** from the ops drawer at the bottom.
 - **Image thumbnails** — image files get the same on-disk thumbnail treatment and
   show inline in the listing and detail pane.
 - **Space map** — a **Space map** tab with a WizTree/WinDirStat-style **colored
@@ -54,7 +59,8 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   (keep both / replace / skip). Streamed, so multi-GB files are fine.
 - **Find duplicates** — a **Duplicates** tab groups files that share a name and
   size; toggle between **all mapped drives** and just the open one, see how much
-  space is reclaimable, and delete individual copies from a chosen location.
+  space is reclaimable, and delete individual copies from a chosen location. Click
+  any copy to preview it in the detail pane.
 - **Delete on disk** — remove the real file or folder from the detail pane, with a
   confirm step (drive must be connected).
 - **Open in Explorer** — jump straight to a file's real location in Windows

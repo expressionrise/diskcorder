@@ -16,6 +16,10 @@ const VIDEO_EXTS = [
   'mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'wmv', 'flv',
   'mpg', 'mpeg', 'm2ts', 'ts', '3gp', 'ogv'
 ];
+const IMAGE_EXTS = [
+  'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'avif'
+];
+const MEDIA_EXTS = VIDEO_EXTS.concat(IMAGE_EXTS);
 
 let cacheDir = null;     // set by init()
 let ffmpegPath = null;   // resolved lazily
@@ -44,6 +48,12 @@ function init(userDataPath) {
 
 function isVideo(ext) {
   return !!ext && VIDEO_EXTS.includes(ext.toLowerCase());
+}
+function isImage(ext) {
+  return !!ext && IMAGE_EXTS.includes(ext.toLowerCase());
+}
+function isMedia(ext) {
+  return !!ext && MEDIA_EXTS.includes(ext.toLowerCase());
 }
 
 function dirFor(volumeId) {
@@ -103,15 +113,19 @@ function probeDuration(src, signal) {
   });
 }
 
-async function generateThumb(srcPath, volumeId, entryId, signal) {
+async function generateThumb(srcPath, volumeId, entryId, signal, kind) {
   const out = thumbPath(volumeId, entryId);
   await fsp.mkdir(path.dirname(out), { recursive: true });
-  const dur = await probeDuration(srcPath, signal);
-  const ss = dur && dur > 1 ? (dur * 0.1).toFixed(2) : '0';
-  await run([
-    '-y', '-ss', ss, '-i', srcPath, '-frames:v', '1',
-    '-vf', 'scale=320:-2', '-q:v', '4', out
-  ], signal, 60000);
+  // Images: decode a single frame directly. Videos: seek ~10% in first.
+  let args;
+  if (kind === 'image') {
+    args = ['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
+  } else {
+    const dur = await probeDuration(srcPath, signal);
+    const ss = dur && dur > 1 ? (dur * 0.1).toFixed(2) : '0';
+    args = ['-y', '-ss', ss, '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
+  }
+  await run(args, signal, 60000);
   return out;
 }
 
@@ -168,11 +182,17 @@ async function clearVolume(volumeId) {
   await fsp.rm(dirFor(volumeId), { recursive: true, force: true }).catch(() => {});
 }
 
+// Drop the cached thumb + preview for a single entry (used when a file is deleted).
+async function removeEntry(volumeId, entryId) {
+  await fsp.rm(thumbPath(volumeId, entryId), { force: true }).catch(() => {});
+  await fsp.rm(previewPath(volumeId, entryId), { force: true }).catch(() => {});
+}
+
 module.exports = {
-  init, isVideo, ffmpegAvailable,
+  init, isVideo, isImage, isMedia, ffmpegAvailable,
   generateThumb, generatePreview,
-  hasThumb, hasPreview, clearVolume,
+  hasThumb, hasPreview, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
-  VIDEO_EXTS,
+  VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,
   get cacheDir() { return cacheDir; }
 };

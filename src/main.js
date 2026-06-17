@@ -314,6 +314,16 @@ ipcMain.handle('entries:duplicates', (_e, volumeId) =>
 // ---- IPC: thumbnails (video + image) ------------------------------------
 
 let thumbAbort = null;
+let thumbGate = null;   // pause/resume gate for the batch generator
+function makePauseGate() {
+  let paused = false, waiters = [];
+  return {
+    get paused() { return paused; },
+    pause()  { paused = true; },
+    resume() { paused = false; waiters.forEach(r => r()); waiters = []; },
+    wait()   { return paused ? new Promise(r => waiters.push(r)) : Promise.resolve(); }
+  };
+}
 const kindOf = (ext) => thumbs.isVideo(ext) ? 'video' : (thumbs.isImage(ext) ? 'image' : null);
 
 // Generate (if missing) the thumb — plus a hover preview for videos — for one
@@ -358,13 +368,17 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   if (!media.length) return { ok: true, total: 0 };
 
   thumbAbort = new AbortController();
+  thumbGate = makePauseGate();
   const signal = thumbAbort.signal;
   const total = media.length;
   let done = 0;
 
   const worker = async (queue) => {
     while (queue.length && !signal.aborted) {
+      await thumbGate.wait();          // block here while paused
+      if (signal.aborted) break;
       const m = queue.shift();
+      if (!m) break;
       const kind = kindOf(m.ext);
       const src = path.join(vol.root_path, m.rel_path);
       try {
@@ -384,10 +398,13 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
   send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
   thumbAbort = null;
+  thumbGate = null;
   return { ok: true, total, done, canceled: signal.aborted };
 });
 
-ipcMain.handle('thumbs:cancel', () => { if (thumbAbort) thumbAbort.abort(); return true; });
+ipcMain.handle('thumbs:cancel', () => { if (thumbAbort) thumbAbort.abort(); if (thumbGate) thumbGate.resume(); return true; });
+ipcMain.handle('thumbs:pause',  () => { if (thumbGate) thumbGate.pause();  return true; });
+ipcMain.handle('thumbs:resume', () => { if (thumbGate) thumbGate.resume(); return true; });
 
 // ---- IPC: tags -----------------------------------------------------------
 

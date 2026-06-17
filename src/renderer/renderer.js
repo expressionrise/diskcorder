@@ -887,6 +887,21 @@ function showOp(kind, label) {
     <div class="op-bar"><div class="op-fill"></div></div>
     <span class="op-pct">…</span>`;
   row.querySelector('.op-label').textContent = label;
+  // Thumbnail batches can be paused / resumed / canceled while they run.
+  if (kind === 'thumbs') {
+    const pause = document.createElement('button');
+    pause.className = 'btn btn-ghost mini-btn op-ctl';
+    pause.textContent = 'Pause';
+    pause.addEventListener('click', async () => {
+      if (pause.textContent === 'Pause') { await api.pauseThumbs(); pause.textContent = 'Resume'; }
+      else { await api.resumeThumbs(); pause.textContent = 'Pause'; }
+    });
+    const cancel = document.createElement('button');
+    cancel.className = 'btn btn-ghost-danger mini-btn op-ctl';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => api.cancelThumbs());
+    row.append(pause, cancel);
+  }
   drawer.appendChild(row);
   return row;
 }
@@ -1100,6 +1115,8 @@ async function loadDuplicates() {
       const reachable = !!state.reachable[it.volume_id];
       const rowEl = document.createElement('div');
       rowEl.className = 'dup-item';
+      rowEl.dataset.id = it.id;
+      rowEl.title = 'Click to preview in the side panel';
       const loc = document.createElement('div');
       loc.className = 'dup-loc';
       loc.innerHTML = `<span class="dup-vol"></span><span class="dup-path"></span>`;
@@ -1110,7 +1127,12 @@ async function loadDuplicates() {
       del.textContent = 'Delete';
       del.disabled = !reachable;
       del.title = reachable ? 'Delete this copy from disk' : 'Drive offline';
-      del.addEventListener('click', () => deleteDuplicate(it, g.items.length));
+      del.addEventListener('click', (e) => { e.stopPropagation(); deleteDuplicate(it, g.items.length); });
+      rowEl.addEventListener('click', () => {
+        document.querySelectorAll('.dup-item.selected').forEach(el => el.classList.remove('selected'));
+        rowEl.classList.add('selected');
+        selectEntry(it.id);
+      });
       rowEl.append(loc, del);
       card.appendChild(rowEl);
     }

@@ -36,6 +36,7 @@
     </div>
     <button id="import-drive" class="btn btn-ghost" title="Import a drive catalog (.json)">Import</button>
     <button id="map-drive" class="btn btn-primary">Map a drive</button>
+    <button id="info-btn" class="btn btn-ghost info-btn" title="About Diskcorder — what it does and how to use it" aria-label="Info">?</button>
   </header>
 
   <main class="layout">
@@ -52,14 +53,72 @@
     <section class="browser">
       <div class="tabbar">
         <button id="tab-files" class="tab active">Files</button>
+        <button id="tab-large" class="tab">Large files</button>
         <button id="tab-space" class="tab">Space map</button>
         <button id="tab-dupes" class="tab">Duplicates</button>
       </div>
 
       <div id="view-files" class="view">
-        <nav id="breadcrumb" class="breadcrumb"></nav>
+        <div class="files-bar">
+          <nav id="breadcrumb" class="breadcrumb"></nav>
+          <div class="files-controls">
+            <div class="seg" id="file-view-toggle">
+              <button class="seg-btn active" data-view="folders" title="Browse folder by folder">Folders</button>
+              <button class="seg-btn" data-view="list" title="Flat list of every file with its location">List</button>
+            </div>
+            <label>Sort
+              <select id="file-sort">
+                <option value="name">Name</option>
+                <option value="size">Size</option>
+                <option value="date">Date</option>
+                <option value="label">Label</option>
+                <option value="tag">Tag</option>
+              </select>
+            </label>
+            <button id="file-sort-dir" class="btn btn-ghost mini-btn" title="Ascending / descending">↑</button>
+          </div>
+        </div>
         <div id="listing" class="listing"></div>
         <div id="listing-empty" class="listing-empty hidden">Select a drive to start browsing.</div>
+      </div>
+
+      <div id="view-large" class="view hidden">
+        <div class="large-head">
+          <div class="large-controls">
+            <label>Min size
+              <select id="large-min">
+                <option value="0">Any</option>
+                <option value="10485760">≥ 10 MB</option>
+                <option value="104857600">≥ 100 MB</option>
+                <option value="524288000">≥ 500 MB</option>
+                <option value="1073741824">≥ 1 GB</option>
+                <option value="5368709120">≥ 5 GB</option>
+              </select>
+            </label>
+            <label>Modified from <input type="date" id="large-from" /></label>
+            <label>to <input type="date" id="large-to" /></label>
+            <label>Show
+              <select id="large-limit">
+                <option value="50">Top 50</option>
+                <option value="100" selected>Top 100</option>
+                <option value="250">Top 250</option>
+                <option value="500">Top 500</option>
+              </select>
+            </label>
+            <label>Sort
+              <select id="large-sort">
+                <option value="size">Largest</option>
+                <option value="date">Newest</option>
+                <option value="date-asc">Oldest</option>
+                <option value="name">Name</option>
+              </select>
+            </label>
+            <label class="scope"><input type="checkbox" id="large-group-year" /> group by year</label>
+            <button id="large-reset" class="btn btn-ghost mini-btn">Reset</button>
+          </div>
+          <span id="large-summary" class="large-summary"></span>
+        </div>
+        <div id="large-list" class="listing"></div>
       </div>
 
       <div id="view-space" class="view hidden">
@@ -81,6 +140,16 @@
             <button id="dupes-refresh" class="btn btn-ghost mini-btn">Refresh</button>
           </div>
         </div>
+        <div id="dupes-actions" class="dupes-actions hidden">
+          <span id="dupes-selcount" class="dupes-selcount">0 selected</span>
+          <span class="dupes-actions-spacer"></span>
+          <button id="dupes-keep-newest" class="btn btn-ghost mini-btn"
+                  title="In every set, tick all copies except the most recently modified one">Select all but newest</button>
+          <button id="dupes-keep-oldest" class="btn btn-ghost mini-btn"
+                  title="In every set, tick all copies except the oldest one">Select all but oldest</button>
+          <button id="dupes-clear" class="btn btn-ghost mini-btn">Clear</button>
+          <button id="dupes-delete-sel" class="btn btn-ghost-danger mini-btn" disabled>Delete selected</button>
+        </div>
         <div id="dupes-list" class="dupes-list"></div>
       </div>
     </section>
@@ -96,6 +165,8 @@
         <dl class="detail-meta" id="detail-meta"></dl>
 
         <button id="reveal-loc" class="btn btn-ghost reveal-btn">Open file location in Explorer…</button>
+        <button id="test-file" class="btn btn-ghost reveal-btn" title="Read the file from the drive to check it isn't corrupt or unreadable">Test file for damage…</button>
+        <div id="test-result" class="test-result hidden"></div>
 
         <label class="field-label" for="alias-input">Rename (label only — safe offline)</label>
         <input id="alias-input" class="field" type="text" placeholder="e.g. Devon trip raw footage" />
@@ -132,6 +203,73 @@
 
   <!-- Space-map tooltip (follows the cursor) -->
   <div id="tm-tip" class="tm-tip hidden"></div>
+
+  <!-- Info / help modal -->
+  <div class="modal-backdrop hidden" id="info-modal">
+    <div class="modal modal-wide">
+      <h2>About Diskcorder</h2>
+      <div class="info-body">
+        <p>Diskcorder catalogs your external and offline drives so you can search,
+           browse, and annotate what's on them <strong>even when the drive is
+           unplugged</strong>. Mapping a drive records every file's name, path, size,
+           and a thumbnail — the files themselves stay where they are.</p>
+
+        <h3>Getting started</h3>
+        <ul>
+          <li><strong>Map a drive</strong> — pick a connected drive to scan it into the catalog.</li>
+          <li><strong>Import</strong> — load a catalog someone exported as a <code>.json</code> file
+              (its bundled thumbnails come with it).</li>
+          <li>Click a drive in the left rail to browse it; click a file to see details, add a
+              rename label, notes, and tags on the right.</li>
+          <li><strong>Test file for damage</strong> (in a file's detail panel) reads the real file off
+              the drive to check it isn't corrupt — ffmpeg decodes videos and images, other files are
+              read end to end to catch bad sectors. Handy for files that won't open.</li>
+        </ul>
+
+        <h3>The drives rail (left)</h3>
+        <ul>
+          <li>The top bar shows <strong>real disk usage from the system</strong> (used of total) when the
+              drive is connected; the details below compare that with how much Diskcorder has cataloged.</li>
+          <li>A blue <strong>coverage bar</strong> shows how many thumbnails already exist
+              (e.g. <code>1,240 / 5,678 thumbnails</code>); a gold bar appears below it while a
+              generation pass is running.</li>
+          <li><strong>Re-scan</strong> — refresh the catalog for new, changed, or removed files.</li>
+          <li><strong>Thumbnails</strong> — generate the still thumbnails for every image and video on
+              this drive. It resumes where it left off and skips anything already made, so re-running is
+              fast. (Thumbnails are also created automatically after a scan and on demand as you browse.)</li>
+          <li><strong>Rename label</strong> — rename the drive inside Diskcorder only (the disk is untouched).</li>
+          <li><strong>Export catalog</strong> — save this drive's catalog, <em>including its
+              thumbnails</em>, to a single <code>.json</code> file you can import on another laptop.
+              (Hover-preview clips aren't bundled — they regenerate on demand.)</li>
+          <li><strong>Forget drive</strong> — remove the drive from Diskcorder. The disk and its files are untouched.</li>
+        </ul>
+
+        <h3>Thumbnails &amp; previews</h3>
+        <ul>
+          <li>Still thumbnails are taken from the <strong>first frame</strong> of a video (or the image itself).</li>
+          <li>Thumbnails generate <strong>automatically</strong> when a drive is connected (and after a
+              scan); generation is resumable — it picks up where it left off and skips anything already
+              made, so re-running is fast.</li>
+          <li>Hover a video (in the list or the detail pane) to play its short preview clip.</li>
+        </ul>
+
+        <h3>Other views</h3>
+        <ul>
+          <li><strong>Files</strong> — browse <em>Folders</em> (the tree) or switch to <em>List</em> for a
+              flat list of every file with its location. Sort either by name, size, date, label, or tag.</li>
+          <li><strong>Large files</strong> — the biggest files on the drive, filterable by size and
+              modified date, sortable, and optionally grouped by year — to find what's worth clearing
+              or archiving.</li>
+          <li><strong>Space map</strong> — a treemap of what's using room on the drive.</li>
+          <li><strong>Duplicates</strong> — find identical files across one or all mapped drives.</li>
+          <li><strong>Search</strong> — search names, notes, and labels across every drive (or just the open one).</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="info-close">Got it</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Name-drive / confirm modal -->
   <div class="modal-backdrop hidden" id="name-modal">

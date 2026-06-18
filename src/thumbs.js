@@ -116,15 +116,8 @@ function probeDuration(src, signal) {
 async function generateThumb(srcPath, volumeId, entryId, signal, kind) {
   const out = thumbPath(volumeId, entryId);
   await fsp.mkdir(path.dirname(out), { recursive: true });
-  // Images: decode a single frame directly. Videos: seek ~10% in first.
-  let args;
-  if (kind === 'image') {
-    args = ['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
-  } else {
-    const dur = await probeDuration(srcPath, signal);
-    const ss = dur && dur > 1 ? (dur * 0.1).toFixed(2) : '0';
-    args = ['-y', '-ss', ss, '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
-  }
+  // Images and videos alike: decode the very first frame directly.
+  const args = ['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
   await run(args, signal, 60000);
   return out;
 }
@@ -170,11 +163,75 @@ async function generatePreview(srcPath, volumeId, entryId, signal) {
   }
 }
 
+// Decode the whole file with ffmpeg, reporting any decode errors — a reliable
+// way to tell whether a video/image is corrupt or just won't open. Abortable
+// (large files can take a while). Resolves { ok, code, errors } or { aborted }.
+function checkMedia(srcPath, signal) {
+  return new Promise((resolve) => {
+    const proc = spawn(resolveFfmpeg(), ['-v', 'error', '-i', srcPath, '-f', 'null', '-'], { windowsHide: true });
+    let err = '';
+    const onAbort = () => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    proc.stderr.on('data', d => { err += d.toString(); if (err.length > 8000) err = err.slice(-8000); });
+    proc.on('error', () => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve({ ok: false, code: -1, errors: 'ffmpeg failed to start' });
+    });
+    proc.on('close', (code) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      if (signal && signal.aborted) return resolve({ aborted: true });
+      const errors = err.trim();
+      resolve({ ok: code === 0 && !errors, code, errors });
+    });
+  });
+}
+
+// How many still thumbnails (.jpg) are already cached for a volume — used for
+// the rail's "how many already created" coverage bar.
+function countThumbs(volumeId) {
+  try {
+    return fs.readdirSync(dirFor(volumeId)).reduce((n, f) => n + (f.endsWith('.jpg') ? 1 : 0), 0);
+  } catch { return 0; }
+}
+
 async function hasThumb(volumeId, entryId) {
   try { await fsp.access(thumbPath(volumeId, entryId)); return true; } catch { return false; }
 }
 async function hasPreview(volumeId, entryId) {
   try { await fsp.access(previewPath(volumeId, entryId)); return true; } catch { return false; }
+}
+
+// Read every cached still for a volume as base64, keyed by entry id, so the
+// thumbnails can travel inside a catalog export. Hover-preview .mp4 clips are
+// intentionally left out — they're large and regenerate on demand.
+async function exportThumbs(volumeId) {
+  const dir = dirFor(volumeId);
+  const out = {};
+  let files;
+  try { files = await fsp.readdir(dir); } catch { return out; }
+  for (const f of files) {
+    if (!f.endsWith('.jpg')) continue;
+    const id = parseInt(f, 10);
+    if (!Number.isInteger(id)) continue;
+    try { out[id] = (await fsp.readFile(path.join(dir, f))).toString('base64'); } catch { /* skip */ }
+  }
+  return out;
+}
+
+// Write thumbnails carried in an export back into a (freshly imported) volume's
+// cache, mapping each original entry id to its new id. Returns how many landed.
+async function importThumbs(volumeId, thumbMap, idMap) {
+  if (!thumbMap || typeof thumbMap !== 'object') return 0;
+  const dir = dirFor(volumeId);
+  await fsp.mkdir(dir, { recursive: true });
+  let n = 0;
+  for (const [oldId, b64] of Object.entries(thumbMap)) {
+    const newId = idMap[oldId];
+    if (newId == null || !b64) continue;
+    try { await fsp.writeFile(path.join(dir, `${newId}.jpg`), Buffer.from(b64, 'base64')); n += 1; }
+    catch { /* skip */ }
+  }
+  return n;
 }
 
 // Delete the whole cache subtree for a volume (used on re-scan / removal).
@@ -191,7 +248,7 @@ async function removeEntry(volumeId, entryId) {
 module.exports = {
   init, isVideo, isImage, isMedia, ffmpegAvailable,
   generateThumb, generatePreview,
-  hasThumb, hasPreview, clearVolume, removeEntry,
+  hasThumb, hasPreview, countThumbs, checkMedia, exportThumbs, importThumbs, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
   VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,
   get cacheDir() { return cacheDir; }

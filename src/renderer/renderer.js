@@ -107,12 +107,17 @@ function toast(msg, isError = false) {
 
 const state = {
   volumes: [],
-  maxBytes: 1,            // largest catalog, for the relative capacity bar
+  maxBytes: 1,            // largest catalog, for the offline fallback bar
   reachable: {},          // volumeId -> bool (drive currently connected?)
+  capacity: {},           // volumeId -> { total, free, used } | null (when online)
+  coverage: {},           // volumeId -> { made, total } thumbnails created so far
   activeVolumeId: null,
   trail: [],              // [{ id: null|entryId, name }] — id null == volume root
   selectedEntry: null,    // full row from getEntry, for the detail pane
   searching: false,
+  fileView: 'folders',    // 'folders' (tree) | 'list' (flat filenames + locations)
+  fileSort: 'name',       // 'name' | 'size' | 'date' | 'label' | 'tag'
+  fileSortDir: 'asc',     // 'asc' | 'desc'
   ffmpegReady: false,
   tagVocab: [],           // every tag ever used, for autocomplete
   tab: 'files',           // 'files' | 'space'
@@ -130,19 +135,82 @@ async function loadRail() {
   refreshReachability();
 }
 
+// Thumbnail coverage (how many stills are already cached) for every drive.
+// Independent of whether the drive is connected — it reads the local cache.
+async function refreshCoverage(ids) {
+  const vols = ids ? state.volumes.filter(v => ids.includes(v.id)) : state.volumes;
+  await Promise.all(vols.map(async v => {
+    try { state.coverage[v.id] = await api.thumbCoverage(v.id); }
+    catch { state.coverage[v.id] = null; }
+  }));
+  document.querySelectorAll('.volume-card').forEach(card => renderCoverage(card, Number(card.dataset.id)));
+}
+
+// The persistent "X / Y thumbnails created" bar under the storage bar.
+function renderCoverage(card, id) {
+  const wrap = card.querySelector('.thumb-cov');
+  const fill = card.querySelector('.thumb-cov-fill');
+  const text = card.querySelector('.thumb-cov-text');
+  if (!wrap || !fill) return;
+  const c = state.coverage[id];
+  if (!c || !c.total) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  const pct = Math.round((c.made / c.total) * 100);
+  fill.style.width = pct + '%';
+  wrap.classList.toggle('complete', c.made >= c.total);
+  if (text) text.textContent = `${c.made.toLocaleString()} / ${c.total.toLocaleString()} thumbnails`;
+  wrap.title = c.made >= c.total
+    ? `All ${c.total.toLocaleString()} thumbnails created`
+    : `${c.made.toLocaleString()} of ${c.total.toLocaleString()} thumbnails created — click “Thumbnails” to make the rest`;
+}
+
 async function refreshReachability() {
+  const wasOnline = { ...state.reachable };
   await Promise.all(state.volumes.map(async v => {
     try { state.reachable[v.id] = await api.isReachable(v.id); } catch { state.reachable[v.id] = false; }
+    try { state.capacity[v.id] = state.reachable[v.id] ? await api.driveCapacity(v.id) : null; }
+    catch { state.capacity[v.id] = null; }
   }));
-  // update badges in place
+  // update badges + capacity bars in place
   document.querySelectorAll('.volume-card').forEach(card => {
     const id = Number(card.dataset.id);
     const badge = card.querySelector('.badge');
-    if (!badge) return;
-    const online = !!state.reachable[id];
-    badge.textContent = online ? 'connected' : 'offline';
-    badge.classList.toggle('online', online);
+    if (badge) {
+      const online = !!state.reachable[id];
+      badge.textContent = online ? 'connected' : 'offline';
+      badge.classList.toggle('online', online);
+    }
+    updateCapBar(card, id);
+    renderVolDetail(card, id);
   });
+  await refreshCoverage();
+  // Auto-generate thumbnails for any drive that just became connected, so they
+  // fill in without the user pressing anything. Resumable + skips existing work.
+  for (const v of state.volumes) {
+    if (state.reachable[v.id] && !wasOnline[v.id]) queueAutoThumbs(v.id);
+  }
+}
+
+// Fill the rail's capacity bar from real disk usage when the drive is online,
+// otherwise fall back to the drive's cataloged size relative to the biggest one.
+function updateCapBar(card, id) {
+  const fill = card.querySelector('.cap-fill');
+  const cap = card.querySelector('.cap-bar');
+  const usage = card.querySelector('.cap-usage');
+  if (!fill || !cap) return;
+  const c = state.capacity[id];
+  if (c && c.total) {
+    const pct = Math.min(100, Math.max(2, Math.round((c.used / c.total) * 100)));
+    fill.style.width = pct + '%';
+    cap.title = `${humanFileSize(c.used)} used of ${humanFileSize(c.total)} · ${humanFileSize(c.free)} free`;
+    if (usage) usage.textContent = `${humanFileSize(c.used)} / ${humanFileSize(c.total)}`;
+  } else {
+    const v = state.volumes.find(x => x.id === id);
+    const pct = Math.max(3, Math.round(((v && v.total_bytes || 0) / state.maxBytes) * 100));
+    fill.style.width = pct + '%';
+    cap.title = 'Drive offline — bar shows cataloged size relative to your largest drive';
+    if (usage) usage.textContent = '';
+  }
 }
 
 function renderRail() {
@@ -160,7 +228,6 @@ function renderRail() {
     const card = document.createElement('li');
     card.className = 'volume-card' + (v.id === state.activeVolumeId ? ' active' : '');
     card.dataset.id = v.id;
-    const pct = Math.max(3, Math.round(((v.total_bytes || 0) / state.maxBytes) * 100));
     const online = !!state.reachable[v.id];
 
     card.innerHTML = `
@@ -172,13 +239,23 @@ function renderRail() {
         <span>${(v.file_count || 0).toLocaleString()} files</span>
         <span>${humanFileSize(v.total_bytes)}</span>
       </div>
-      <div class="cap-bar"><div class="cap-fill" style="width:${pct}%"></div></div>
+      <div class="cap-bar"><div class="cap-fill"></div></div>
+      <div class="cap-usage"></div>
+      <div class="thumb-cov">
+        <div class="thumb-cov-bar"><div class="thumb-cov-fill"></div></div>
+        <span class="thumb-cov-text"></span>
+      </div>
+      <div class="thumb-prog hidden">
+        <div class="thumb-prog-bar"><div class="thumb-prog-fill"></div></div>
+        <span class="thumb-prog-text"></span>
+      </div>
+      <div class="vol-detail${v.id === state.activeVolumeId ? '' : ' hidden'}"></div>
       <div class="vol-actions">
-        <button class="mini" data-act="rescan" title="Re-scan this drive">Re-scan</button>
-        <button class="mini" data-act="previews" title="Generate video previews">Previews</button>
-        <button class="mini" data-act="rename" title="Rename label">Rename</button>
-        <button class="mini" data-act="export" title="Export this catalog to a file">Export</button>
-        <button class="mini mini-danger" data-act="remove" title="Forget this drive">Remove</button>
+        <button class="mini" data-act="rescan" title="Re-scan this drive for new, changed, or removed files">Re-scan</button>
+        <button class="mini" data-act="thumbs" title="Generate the still thumbnails for every image and video on this drive. Resumes where it left off and skips ones already made.">Thumbnails</button>
+        <button class="mini" data-act="rename" title="Rename this drive's label in Diskcorder (the disk itself is untouched)">Rename label</button>
+        <button class="mini" data-act="export" title="Save this drive's catalog to a .json file you can import elsewhere">Export catalog</button>
+        <button class="mini mini-danger" data-act="remove" title="Forget this drive from Diskcorder (the disk and its files are untouched)">Forget drive</button>
       </div>`;
     card.querySelector('.vname-text').textContent = v.name;
 
@@ -187,12 +264,42 @@ function renderRail() {
       openVolume(v);
     });
     card.querySelector('[data-act="rescan"]').addEventListener('click', () => mapDrive(v));
-    card.querySelector('[data-act="previews"]').addEventListener('click', () => generatePreviews(v));
+    card.querySelector('[data-act="thumbs"]').addEventListener('click', () => generateThumbnails(v));
     card.querySelector('[data-act="rename"]').addEventListener('click', () => renameVolume(v));
     card.querySelector('[data-act="export"]').addEventListener('click', () => exportVolume(v));
     card.querySelector('[data-act="remove"]').addEventListener('click', () => removeVolume(v));
 
     list.appendChild(card);
+    updateCapBar(card, v.id);
+    renderCoverage(card, v.id);
+    renderVolDetail(card, v.id);
+  }
+}
+
+// Drive details for the (expanded) active card: real disk figures from the
+// system, alongside what Diskcorder has cataloged, so the two can be compared.
+function renderVolDetail(card, id) {
+  const box = card.querySelector('.vol-detail');
+  if (!box) return;
+  const v = state.volumes.find(x => x.id === id);
+  if (!v) return;
+  const c = state.capacity[id];
+  const rows = [];
+  if (c && c.total) {
+    rows.push(['Drive total', humanFileSize(c.total)]);
+    rows.push(['Used on disk', humanFileSize(c.used)]);
+    rows.push(['Free', humanFileSize(c.free)]);
+  }
+  rows.push(['Cataloged', `${humanFileSize(v.total_bytes)} · ${(v.file_count || 0).toLocaleString()} files`]);
+  if (!c) rows.push(['Status', state.reachable[id] ? 'reading…' : 'offline']);
+  if (v.root_path) rows.push(['Path', v.root_path]);
+
+  box.innerHTML = '';
+  for (const [k, val] of rows) {
+    const kEl = document.createElement('span'); kEl.className = 'vd-k'; kEl.textContent = k;
+    const vEl = document.createElement('span'); vEl.className = 'vd-v'; vEl.textContent = val;
+    if (k === 'Path') vEl.title = val;
+    box.append(kEl, vEl);
   }
 }
 
@@ -212,7 +319,10 @@ async function renameVolume(v) {
 async function exportVolume(v) {
   const res = await api.exportVolume(v.id).catch(e => ({ ok: false, error: e.message }));
   if (!res || (!res.ok && !res.canceled)) { toast(res && res.error ? res.error : 'Export failed.', true); return; }
-  if (res.ok) toast(`Exported ${res.count.toLocaleString()} entries.`);
+  if (res.ok) {
+    const t = res.thumbs ? ` and ${res.thumbs.toLocaleString()} thumbnails` : '';
+    toast(`Exported ${res.count.toLocaleString()} entries${t}.`);
+  }
 }
 
 async function importVolume() {
@@ -223,7 +333,7 @@ async function importVolume() {
   await loadRail();
   const vol = state.volumes.find(v => v.id === res.volumeId);
   if (vol) await openVolume(vol);
-  toast('Catalog imported.');
+  toast(res.thumbs ? `Catalog imported with ${res.thumbs.toLocaleString()} thumbnails.` : 'Catalog imported.');
 }
 
 async function removeVolume(v) {
@@ -261,16 +371,85 @@ async function openVolume(v) {
   renderRail();
   await loadListing();
   if (state.tab === 'space') await tmLoadLevel(null);
+  else if (state.tab === 'large') await loadLargeFiles();
 }
 
 async function loadListing() {
   if (state.activeVolumeId == null) { clearBrowser(); return; }
   $('listing-empty').classList.add('hidden');
+
+  if (state.fileView === 'list') {
+    const rows = await api.listFiles(state.activeVolumeId);
+    sortEntries(rows, false);
+    $('breadcrumb').innerHTML =
+      `<span class="crumb current">All files · ${rows.length.toLocaleString()}${rows.length >= 20000 ? '+' : ''}</span>`;
+    renderRows(rows, false, { showPath: true });
+    return;
+  }
+
   const parent = state.trail[state.trail.length - 1];
   const rows = await api.getChildren(state.activeVolumeId, parent.id);
+  sortEntries(rows, true);
   renderBreadcrumb();
   renderRows(rows, false);
 }
+
+// Sort a row set in place by the current Files-view sort key + direction.
+// In folder view, folders are kept above files regardless of the key.
+function sortEntries(rows, foldersFirst) {
+  const dir = state.fileSortDir === 'desc' ? -1 : 1;
+  const sizeOf = r => r.is_dir ? (r.tree_size || 0) : (r.size || 0);
+  const nameOf = r => (r.alias || r.name || '').toLowerCase();
+  const firstTag = r => { const t = parseTagList(r.tags); return t.length ? t[0].toLowerCase() : ''; };
+  rows.sort((a, b) => {
+    if (foldersFirst && !!a.is_dir !== !!b.is_dir) return a.is_dir ? -1 : 1;
+    let r = 0;
+    switch (state.fileSort) {
+      case 'size': r = sizeOf(a) - sizeOf(b); break;
+      case 'date': r = String(a.mtime || '').localeCompare(String(b.mtime || '')); break;
+      case 'label': {
+        const la = a.alias || '', lb = b.alias || '';
+        if (!la !== !lb) return (la ? -1 : 1);          // unlabeled last, both directions
+        r = la.toLowerCase().localeCompare(lb.toLowerCase());
+        break;
+      }
+      case 'tag': {
+        const ta = firstTag(a), tb = firstTag(b);
+        if (!ta !== !tb) return (ta ? -1 : 1);          // untagged last, both directions
+        r = ta.localeCompare(tb);
+        break;
+      }
+      default: r = nameOf(a).localeCompare(nameOf(b));
+    }
+    if (r === 0) r = nameOf(a).localeCompare(nameOf(b));
+    return r * dir;
+  });
+}
+
+function parseTagList(tagsJson) {
+  if (!tagsJson) return [];
+  try { const a = JSON.parse(tagsJson); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+
+// Files-view controls: folder/list toggle + sort key + direction.
+document.querySelectorAll('#file-view-toggle .seg-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (state.fileView === btn.dataset.view) return;
+    state.fileView = btn.dataset.view;
+    document.querySelectorAll('#file-view-toggle .seg-btn')
+      .forEach(b => b.classList.toggle('active', b === btn));
+    if (state.activeVolumeId != null && !state.searching) loadListing();
+  });
+});
+$('file-sort').addEventListener('change', (e) => {
+  state.fileSort = e.target.value;
+  if (state.activeVolumeId != null && !state.searching) loadListing();
+});
+$('file-sort-dir').addEventListener('click', () => {
+  state.fileSortDir = state.fileSortDir === 'asc' ? 'desc' : 'asc';
+  $('file-sort-dir').textContent = state.fileSortDir === 'asc' ? '↑' : '↓';
+  if (state.activeVolumeId != null && !state.searching) loadListing();
+});
 
 function renderBreadcrumb() {
   const bc = $('breadcrumb');
@@ -294,14 +473,15 @@ function renderBreadcrumb() {
   });
 }
 
-function renderRows(rows, asSearch) {
+function renderRows(rows, asSearch, opts = {}) {
   const listing = $('listing');
   listing.innerHTML = '';
+  const showPath = !!opts.showPath;
 
   if (!rows.length) {
     const e = document.createElement('div');
     e.className = 'listing-empty';
-    e.textContent = asSearch ? 'No matches.' : 'This folder is empty.';
+    e.textContent = asSearch ? 'No matches.' : (showPath ? 'This drive has no files.' : 'This folder is empty.');
     listing.appendChild(e);
     return;
   }
@@ -344,10 +524,10 @@ function renderRows(rows, asSearch) {
       nm.appendChild(dot);
     }
     label.appendChild(nm);
-    if (asSearch) {
+    if (asSearch || showPath) {
       const sub = document.createElement('div');
       sub.className = 'sub';
-      sub.textContent = `${r.volume_name} · ${r.rel_path}`;
+      sub.textContent = asSearch ? `${r.volume_name} · ${r.rel_path}` : r.rel_path;
       label.appendChild(sub);
     }
 
@@ -360,7 +540,7 @@ function renderRows(rows, asSearch) {
     row.append(icon, label, sz);
 
     row.addEventListener('click', () => selectEntry(r.id));
-    if (r.is_dir && !asSearch) {
+    if (r.is_dir && !asSearch && !showPath) {
       row.addEventListener('dblclick', () => {
         state.trail.push({ id: r.id, name: r.alias || r.name });
         loadListing();
@@ -491,6 +671,14 @@ function renderDetail(entry) {
     meta.append(dt, dd);
   }
 
+  // Reset the integrity-test control for the newly shown entry.
+  const testBtn = $('test-file');
+  testBtn.classList.toggle('hidden', !!entry.is_dir);
+  testBtn.textContent = 'Test file for damage…';
+  const testRes = $('test-result');
+  testRes.className = 'test-result hidden';
+  testRes.textContent = '';
+
   $('alias-input').value = entry.alias || '';
   $('note-input').value = entry.note || '';
   renderTags(entry);
@@ -603,12 +791,10 @@ function renderMedia(entry) {
     return true;
   };
 
-  if (image) {
-    // Build the image thumb up front (cheap) so the pane isn't empty.
-    if (!hasThumb) ensure(hint.querySelector('span'));
-    box.appendChild(frame);
-    return;
-  }
+  // Build the still thumb up front for the clicked file — images and videos
+  // alike — so the pane isn't empty while the user decides whether to hover.
+  if (!hasThumb) ensure(hint.querySelector('span'));
+  if (image) { box.appendChild(frame); return; }
 
   let vid = null;
   frame.addEventListener('mouseenter', async () => {
@@ -700,6 +886,81 @@ $('reveal-loc').addEventListener('click', async () => {
   if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the location.', true);
 });
 
+// Test the selected file for damage: ffmpeg decode for media, full read otherwise.
+let fileTesting = false;
+$('test-file').addEventListener('click', async () => {
+  const e = state.selectedEntry;
+  if (!e || e.is_dir) return;
+  const btn = $('test-file');
+  const box = $('test-result');
+  if (fileTesting) { api.cancelFileTest(); return; }   // second click cancels
+
+  fileTesting = true;
+  btn.textContent = 'Cancel test';
+  box.className = 'test-result testing';
+  box.textContent = 'Testing… reading the file from the drive. Large files can take a while.';
+
+  const testedId = e.id;
+  const res = await api.testFile(e.id).catch(err => ({ status: 'error', detail: err.message }));
+  fileTesting = false;
+  btn.textContent = 'Test file for damage…';
+  // Ignore the result if the user moved on to a different file meanwhile.
+  if (!state.selectedEntry || state.selectedEntry.id !== testedId) return;
+  renderTestResult(box, res);
+});
+
+function renderTestResult(box, res) {
+  if (!res || res.status === 'canceled') {
+    box.className = 'test-result hidden';
+    box.textContent = '';
+    if (res && res.status === 'canceled') toast('File test canceled.');
+    return;
+  }
+  let cls = 'bad';
+  const lines = [];
+  switch (res.status) {
+    case 'ok':
+      cls = 'ok';
+      lines.push('✓ No problems detected.');
+      lines.push(res.method === 'ffmpeg'
+        ? 'Decoded fully with ffmpeg — the streams are intact.'
+        : `Read all ${humanFileSize(res.bytesRead)} from the drive without a read error.`);
+      break;
+    case 'damaged':
+      lines.push('✗ This media looks damaged — ffmpeg hit decode errors:');
+      if (res.ffmpegErrors) lines.push(res.ffmpegErrors);
+      break;
+    case 'unreadable':
+      lines.push('✗ The drive returned an error while reading this file.');
+      if (res.readError) lines.push(res.readError);
+      if (res.bytesRead != null) lines.push(`Failed after ${humanFileSize(res.bytesRead)} of ${humanFileSize(res.expectedSize)}.`);
+      break;
+    case 'size-mismatch':
+      cls = 'warn';
+      lines.push('⚠ Readable, but the size on disk doesn’t match the catalog — it may be truncated or changed.');
+      break;
+    case 'missing':
+      lines.push('✗ File not found on the connected drive.');
+      break;
+    case 'offline':
+      lines.push('✗ Drive is not connected — connect it and try again.');
+      break;
+    default:
+      lines.push('✗ ' + (res.detail || 'Test failed.'));
+  }
+  if (res.sizeMismatch && res.status !== 'size-mismatch') {
+    lines.push(`Size on disk ${humanFileSize(res.sizeOnDisk)} vs catalog ${humanFileSize(res.expectedSize)}.`);
+  }
+  box.className = 'test-result ' + cls;
+  box.innerHTML = '';
+  lines.forEach((l, i) => {
+    const d = document.createElement('div');
+    d.textContent = l;
+    if (i > 0) d.className = 'tr-detail';
+    box.appendChild(d);
+  });
+}
+
 $('real-delete').addEventListener('click', async () => {
   const e = state.selectedEntry;
   if (!e) return;
@@ -747,18 +1008,25 @@ async function startTransferFlow(move) {
   if (move) { await loadRail(); if (!state.searching) await loadListing(); clearDetail(); }
 }
 
-// ---- video preview batch generation --------------------------------------
+// ---- thumbnail batch generation ------------------------------------------
 
-async function generatePreviews(v) {
+async function generateThumbnails(v) {
   if (!state.reachable[v.id]) { toast('Connect “' + v.name + '” first.', true); return; }
-  if (!state.ffmpegReady) { toast('ffmpeg is not available — previews disabled.', true); return; }
-  const drawer = showOp('thumbs', `Previews · ${v.name}`);
-  const res = await api.generateThumbs(v.id, { previews: true }).catch(err => ({ ok: false, error: err.message }));
+  if (!state.ffmpegReady) { toast('ffmpeg is not available — thumbnails disabled.', true); return; }
+  if (thumbsBusy) { toast('A thumbnail pass is already running — watch the bar at the bottom.'); return; }
+  thumbsBusy = true;
+  const drawer = showOp('thumbs', `Thumbnails · ${v.name}`);
+  const res = await api.generateThumbs(v.id, { previews: false }).catch(err => ({ ok: false, error: err.message }));
   hideOp(drawer);
-  if (!res || !res.ok) { toast(res && res.error ? res.error : 'Preview generation failed.', true); return; }
-  if (res.total === 0) { toast('No video files found on this drive.'); return; }
-  toast(res.canceled ? 'Preview generation canceled.' : `Generated previews for ${res.done} videos.`);
-  if (v.id === state.activeVolumeId && !state.searching) await loadListing();
+  thumbsBusy = false;
+  await refreshCoverage([v.id]);
+  if (!res || !res.ok) { toast(res && res.error ? res.error : 'Thumbnail generation failed.', true); }
+  else if (res.total === 0) { toast('All thumbnails are already up to date.'); }
+  else {
+    toast(res.canceled ? 'Thumbnail generation paused — resumes where it left off.' : `Generated ${res.done} thumbnails.`);
+    if (v.id === state.activeVolumeId && !state.searching) await loadListing();
+  }
+  drainAutoThumbs(); // resume any auto work that was waiting
 }
 
 // ---- search --------------------------------------------------------------
@@ -786,6 +1054,11 @@ $('scope-toggle').addEventListener('change', () => runSearch($('search-input').v
 
 $('map-drive').addEventListener('click', () => mapDrive(null));
 $('import-drive').addEventListener('click', () => importVolume());
+
+// Info / help modal
+$('info-btn').addEventListener('click', () => $('info-modal').classList.remove('hidden'));
+$('info-close').addEventListener('click', () => $('info-modal').classList.add('hidden'));
+$('info-modal').addEventListener('click', (e) => { if (e.target.id === 'info-modal') $('info-modal').classList.add('hidden'); });
 
 let scanning = false;
 
@@ -826,9 +1099,9 @@ async function mapDrive(existingVol) {
     if (vol) await openVolume(vol);
     const skipNote = res.skipped ? ` (${res.skipped} unreadable item${res.skipped === 1 ? '' : 's'} skipped)` : '';
     toast((existingVol ? 'Drive re-scanned.' : 'Drive mapped.') + skipNote);
-    // Kick off thumbnail generation in the background (thumbnails only — the
-    // heavier hover previews are made on demand or via the "Previews" button).
-    if (vol && state.ffmpegReady) autoThumbs(vol);
+    // Kick off thumbnail generation in the background (stills only — hover
+    // preview clips are made on demand). Resumable and skips existing work.
+    if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);
   } catch (err) {
     toast(err.message || 'Scan failed.', true);
   } finally {
@@ -839,8 +1112,36 @@ async function mapDrive(existingVol) {
   }
 }
 
-// Background thumbnail pass right after a scan, surfaced in the ops drawer.
+// Only one thumbnail pass runs at a time (the main process keeps a single set
+// of pause/cancel controls), so auto and manual passes are serialized here.
+let thumbsBusy = false;
+const autoThumbQueue = [];
+
+// Queue a drive for automatic thumbnail generation (on connect / after scan).
+// Skips drives with no media or already-complete coverage so it stays cheap.
+function queueAutoThumbs(volumeId) {
+  if (!state.ffmpegReady || !state.reachable[volumeId]) return;
+  const c = state.coverage[volumeId];
+  if (c && c.total === 0) return;                 // nothing to thumbnail
+  if (c && c.total && c.made >= c.total) return;  // already done
+  if (!autoThumbQueue.includes(volumeId)) autoThumbQueue.push(volumeId);
+  drainAutoThumbs();
+}
+
+async function drainAutoThumbs() {
+  if (thumbsBusy) return;
+  while (autoThumbQueue.length) {
+    const id = autoThumbQueue.shift();
+    const vol = state.volumes.find(v => v.id === id);
+    if (!vol || !state.reachable[id]) continue;
+    await autoThumbs(vol);
+  }
+}
+
+// Background thumbnail pass (after a scan or on connect), surfaced in the ops drawer.
 async function autoThumbs(vol) {
+  if (thumbsBusy) return;
+  thumbsBusy = true;
   const row = showOp('thumbs', `Thumbnails · ${vol.name}`);
   try {
     const res = await api.generateThumbs(vol.id, { previews: false });
@@ -849,6 +1150,8 @@ async function autoThumbs(vol) {
     }
   } catch { /* non-fatal */ } finally {
     hideOp(row);
+    thumbsBusy = false;
+    await refreshCoverage([vol.id]);
   }
 }
 
@@ -911,14 +1214,44 @@ function hideOp(row) {
   if (!drawer.querySelector('.op-row')) drawer.classList.add('hidden');
 }
 
-api.onThumbProgress(({ done, total, current, finished }) => {
+api.onThumbProgress(({ done, total, current, finished, volumeId }) => {
   const drawer = $('ops-drawer');
   const row = drawer.querySelector('.op-row');
-  if (!row) return;
-  const pct = total ? Math.round((done / total) * 100) : 0;
-  row.querySelector('.op-fill').style.width = pct + '%';
-  row.querySelector('.op-pct').textContent = `${done}/${total}`;
+  if (row) {
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    row.querySelector('.op-fill').style.width = pct + '%';
+    row.querySelector('.op-pct').textContent = `${done}/${total}`;
+  }
+  if (volumeId != null) updateThumbProg(volumeId, done, total, finished);
 });
+
+// Per-drive thumbnail-generation bar, shown in the rail card under the storage
+// bar while a batch runs for that drive. Also drives the persistent coverage
+// bar upward live (baseline made-count captured at batch start + done so far).
+const thumbBase = {};
+function updateThumbProg(volumeId, done, total, finished) {
+  const card = document.querySelector(`.volume-card[data-id="${volumeId}"]`);
+  if (!card) return;
+
+  if (done === 0 && !finished) {
+    thumbBase[volumeId] = (state.coverage[volumeId] && state.coverage[volumeId].made) || 0;
+  }
+  const cov = state.coverage[volumeId];
+  if (cov && cov.total && !finished) {
+    cov.made = Math.min(cov.total, (thumbBase[volumeId] || 0) + done);
+    renderCoverage(card, volumeId);
+  }
+
+  const wrap = card.querySelector('.thumb-prog');
+  const fill = card.querySelector('.thumb-prog-fill');
+  const text = card.querySelector('.thumb-prog-text');
+  if (!wrap || !fill) return;
+  if (finished || !total) { wrap.classList.add('hidden'); fill.style.width = '0%'; return; }
+  wrap.classList.remove('hidden');
+  const pct = Math.round((done / total) * 100);
+  fill.style.width = pct + '%';
+  if (text) text.textContent = `generating ${done}/${total}`;
+}
 
 let activeTransferRow = null;
 let activeOpId = null;
@@ -1046,13 +1379,14 @@ function transferModal({ entry, targets, move }) {
 // ---- tabs: Files | Space map ---------------------------------------------
 
 $('tab-files').addEventListener('click', () => switchTab('files'));
+$('tab-large').addEventListener('click', () => switchTab('large'));
 $('tab-space').addEventListener('click', () => switchTab('space'));
 $('tab-dupes').addEventListener('click', () => switchTab('dupes'));
 
 function switchTab(tab) {
   if (state.tab === tab) return;
   state.tab = tab;
-  for (const t of ['files', 'space', 'dupes']) {
+  for (const t of ['files', 'large', 'space', 'dupes']) {
     $('tab-' + t).classList.toggle('active', tab === t);
     $('view-' + t).classList.toggle('hidden', tab !== t);
   }
@@ -1064,21 +1398,158 @@ function switchTab(tab) {
     tmLoadLevel(state.tmTrail.length ? state.tmTrail[state.tmTrail.length - 1].id : null);
   } else if (tab === 'dupes') {
     loadDuplicates();
+  } else if (tab === 'large') {
+    loadLargeFiles();
   }
+}
+
+// ---- large files ---------------------------------------------------------
+
+['large-min', 'large-from', 'large-to', 'large-limit', 'large-sort', 'large-group-year'].forEach(id =>
+  $(id).addEventListener('change', loadLargeFiles));
+$('large-reset').addEventListener('click', () => {
+  $('large-min').value = '0';
+  $('large-from').value = '';
+  $('large-to').value = '';
+  $('large-limit').value = '100';
+  $('large-sort').value = 'size';
+  $('large-group-year').checked = false;
+  loadLargeFiles();
+});
+
+function sortLarge(rows) {
+  const key = $('large-sort').value;
+  rows.sort((a, b) => {
+    switch (key) {
+      case 'date':     return String(b.mtime || '').localeCompare(String(a.mtime || ''));   // newest first
+      case 'date-asc': return String(a.mtime || '').localeCompare(String(b.mtime || ''));   // oldest first
+      case 'name':     return (a.alias || a.name || '').toLowerCase().localeCompare((b.alias || b.name || '').toLowerCase());
+      default:         return (b.size || 0) - (a.size || 0);                                 // largest first
+    }
+  });
+}
+
+const yearOf = (mtime) => { const d = mtime ? new Date(mtime) : null; return (d && !isNaN(d)) ? d.getFullYear() : null; };
+
+async function loadLargeFiles() {
+  const list = $('large-list');
+  const summary = $('large-summary');
+  if (state.activeVolumeId == null) {
+    list.innerHTML = '';
+    summary.textContent = 'Open a drive to see its largest files.';
+    return;
+  }
+  const minSize = Number($('large-min').value) || 0;
+  const limit = Number($('large-limit').value) || 100;
+  const from = $('large-from').value;   // 'YYYY-MM-DD' or ''
+  const to = $('large-to').value;
+  const opts = { limit };
+  if (minSize) opts.minSize = minSize;
+  if (from) opts.after = from + 'T00:00:00.000Z';
+  if (to) opts.before = to + 'T23:59:59.999Z';
+
+  const rows = await api.largeFiles(state.activeVolumeId, opts).catch(() => []);
+  sortLarge(rows);
+
+  list.innerHTML = '';
+  if (!rows.length) { summary.textContent = 'No files match these filters.'; return; }
+
+  if ($('large-group-year').checked) renderLargeGrouped(rows, list);
+  else rows.forEach((r, i) => list.appendChild(buildLargeRow(r, i + 1)));
+
+  const totalBytes = rows.reduce((n, r) => n + (r.size || 0), 0);
+  summary.textContent = `${rows.length.toLocaleString()} file${rows.length === 1 ? '' : 's'} · ${humanFileSize(totalBytes)}`;
+}
+
+// Group rows under year headers (years newest-first; rows keep the chosen sort).
+function renderLargeGrouped(rows, list) {
+  const groups = new Map();
+  for (const r of rows) {
+    const y = yearOf(r.mtime);
+    const key = y == null ? 'Unknown date' : y;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (a === 'Unknown date') return 1;
+    if (b === 'Unknown date') return -1;
+    return b - a;
+  });
+  for (const key of keys) {
+    const items = groups.get(key);
+    const bytes = items.reduce((n, r) => n + (r.size || 0), 0);
+    const head = document.createElement('div');
+    head.className = 'lg-year-head';
+    head.innerHTML = `<span></span><span class="lg-year-meta">${items.length} file${items.length === 1 ? '' : 's'} · ${humanFileSize(bytes)}</span>`;
+    head.firstChild.textContent = key;
+    list.appendChild(head);
+    items.forEach((r, i) => list.appendChild(buildLargeRow(r, i + 1)));
+  }
+}
+
+function buildLargeRow(r, rank) {
+  const volId = state.activeVolumeId;
+  const row = document.createElement('div');
+  row.className = 'row large-row';
+  row.dataset.id = r.id;
+  if (state.selectedEntry && state.selectedEntry.id === r.id) row.classList.add('selected');
+
+  const rankEl = document.createElement('span');
+  rankEl.className = 'lg-rank';
+  rankEl.textContent = rank;
+
+  const icon = document.createElement('span');
+  icon.className = 'ic';
+  icon.innerHTML = iconFor(0, r.ext);
+  if (isVideoExt(r.ext)) { icon.classList.add('thumb'); wireThumb(icon, volId, r.id); }
+  else if (isImageExt(r.ext)) { icon.classList.add('thumb'); wireImageThumb(icon, volId, r.id); }
+
+  const label = document.createElement('div');
+  label.className = 'label';
+  const nm = document.createElement('div');
+  nm.className = 'nm';
+  nm.textContent = r.alias || r.name;
+  if (r.note) { const dot = document.createElement('span'); dot.className = 'note-dot'; dot.title = 'Has notes'; nm.appendChild(dot); }
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  sub.textContent = r.rel_path;
+  label.append(nm, sub);
+
+  const date = document.createElement('span');
+  date.className = 'lg-date';
+  date.textContent = fmtDate(r.mtime);
+
+  const sz = document.createElement('span');
+  sz.className = 'sz';
+  sz.textContent = humanFileSize(r.size);
+
+  row.append(rankEl, icon, label, date, sz);
+  row.addEventListener('click', () => selectEntry(r.id));
+  return row;
 }
 
 // ---- duplicates ----------------------------------------------------------
 
+const dupeSel = new Set();      // ids of copies ticked for bulk deletion
+const dupeById = new Map();     // id -> copy row (for size totals + deletion)
+
 $('dupes-refresh').addEventListener('click', loadDuplicates);
 $('dupes-all').addEventListener('change', loadDuplicates);
+$('dupes-clear').addEventListener('click', clearDupeSelection);
+$('dupes-keep-newest').addEventListener('click', () => selectAllBut('newest'));
+$('dupes-keep-oldest').addEventListener('click', () => selectAllBut('oldest'));
+$('dupes-delete-sel').addEventListener('click', deleteSelectedDuplicates);
 
 async function loadDuplicates() {
   const list = $('dupes-list');
   const allDrives = $('dupes-all').checked;
   const scope = allDrives ? null : state.activeVolumeId;
+  dupeSel.clear();
+  dupeById.clear();
   if (!allDrives && scope == null) {
     $('dupes-summary').textContent = 'Open a drive first, or tick “all mapped drives”.';
     list.innerHTML = '';
+    $('dupes-actions').classList.add('hidden');
     return;
   }
   $('dupes-summary').textContent = 'Scanning for duplicates…';
@@ -1102,7 +1573,14 @@ async function loadDuplicates() {
     ? `${list2.length} duplicate set${list2.length === 1 ? '' : 's'} ${where} · up to ${humanFileSize(wasted)} reclaimable`
     : `No duplicates found ${where} (matched by name + size).`;
 
+  $('dupes-actions').classList.toggle('hidden', !list2.length);
+
   for (const g of list2) {
+    // Mark the newest / oldest copy so "keep newest/oldest" can spare it.
+    const withTime = g.items.filter(it => it.mtime);
+    const newest = withTime.reduce((a, b) => (a && a.mtime >= b.mtime ? a : b), null);
+    const oldest = withTime.reduce((a, b) => (a && a.mtime <= b.mtime ? a : b), null);
+
     const card = document.createElement('div');
     card.className = 'dup-group';
     const head = document.createElement('div');
@@ -1113,31 +1591,120 @@ async function loadDuplicates() {
 
     for (const it of g.items) {
       const reachable = !!state.reachable[it.volume_id];
+      dupeById.set(it.id, it);
+
       const rowEl = document.createElement('div');
       rowEl.className = 'dup-item';
       rowEl.dataset.id = it.id;
-      rowEl.title = 'Click to preview in the side panel';
+
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.className = 'dup-check';
+      check.disabled = !reachable;
+      check.title = reachable ? 'Tick to delete this copy' : 'Drive offline — connect it to delete this copy';
+      check.addEventListener('click', (e) => e.stopPropagation());
+      check.addEventListener('change', () => toggleDupe(it.id, check.checked, rowEl));
+
       const loc = document.createElement('div');
       loc.className = 'dup-loc';
-      loc.innerHTML = `<span class="dup-vol"></span><span class="dup-path"></span>`;
+      loc.innerHTML = `<span class="dup-vol"></span><span class="dup-path"></span><span class="dup-when"></span>`;
       loc.querySelector('.dup-vol').textContent = it.volume_name;
       loc.querySelector('.dup-path').textContent = it.rel_path;
+      const when = loc.querySelector('.dup-when');
+      when.textContent = it.mtime ? fmtDate(it.mtime) : '';
+      if (it === newest && g.items.length > 1) when.textContent += ' · newest';
+      else if (it === oldest && g.items.length > 1) when.textContent += ' · oldest';
+
       const del = document.createElement('button');
       del.className = 'btn btn-ghost-danger mini-btn';
       del.textContent = 'Delete';
       del.disabled = !reachable;
       del.title = reachable ? 'Delete this copy from disk' : 'Drive offline';
       del.addEventListener('click', (e) => { e.stopPropagation(); deleteDuplicate(it, g.items.length); });
+
       rowEl.addEventListener('click', () => {
-        document.querySelectorAll('.dup-item.selected').forEach(el => el.classList.remove('selected'));
-        rowEl.classList.add('selected');
+        document.querySelectorAll('.dup-item.previewing').forEach(el => el.classList.remove('previewing'));
+        rowEl.classList.add('previewing');
         selectEntry(it.id);
       });
-      rowEl.append(loc, del);
+      rowEl.append(check, loc, del);
       card.appendChild(rowEl);
     }
     $('dupes-list').appendChild(card);
   }
+  updateDupeActions();
+}
+
+// Tick/untick a copy for bulk deletion.
+function toggleDupe(id, on, rowEl) {
+  if (on) dupeSel.add(id); else dupeSel.delete(id);
+  if (rowEl) rowEl.classList.toggle('selected', on);
+  updateDupeActions();
+}
+
+// In every set, tick all copies except the one to keep (newest or oldest),
+// so deleting the selection leaves exactly one copy of each file.
+function selectAllBut(keep) {
+  // group the on-screen copies back together by their card
+  document.querySelectorAll('.dup-group').forEach(card => {
+    const rows = [...card.querySelectorAll('.dup-item')];
+    const items = rows.map(r => dupeById.get(Number(r.dataset.id))).filter(Boolean);
+    const timed = items.filter(it => it.mtime);
+    if (!timed.length) return;
+    const survivor = keep === 'oldest'
+      ? timed.reduce((a, b) => (a.mtime <= b.mtime ? a : b))
+      : timed.reduce((a, b) => (a.mtime >= b.mtime ? a : b));
+    for (const r of rows) {
+      const it = dupeById.get(Number(r.dataset.id));
+      const check = r.querySelector('.dup-check');
+      if (!it || !check || check.disabled) continue;       // skip offline copies
+      const on = it.id !== survivor.id;
+      check.checked = on;
+      toggleDupe(it.id, on, r);
+    }
+  });
+}
+
+function clearDupeSelection() {
+  dupeSel.clear();
+  document.querySelectorAll('.dup-item').forEach(r => {
+    const c = r.querySelector('.dup-check');
+    if (c) c.checked = false;
+    r.classList.remove('selected');
+  });
+  updateDupeActions();
+}
+
+// Refresh the count + total size + button state in the bulk action bar.
+function updateDupeActions() {
+  const n = dupeSel.size;
+  const bytes = [...dupeSel].reduce((s, id) => s + ((dupeById.get(id) || {}).size || 0), 0);
+  $('dupes-selcount').textContent = n
+    ? `${n} selected · ${humanFileSize(bytes)}`
+    : '0 selected';
+  $('dupes-delete-sel').disabled = n === 0;
+  $('dupes-delete-sel').textContent = n ? `Delete selected (${n})` : 'Delete selected';
+}
+
+async function deleteSelectedDuplicates() {
+  const ids = [...dupeSel];
+  if (!ids.length) return;
+  const bytes = ids.reduce((s, id) => s + ((dupeById.get(id) || {}).size || 0), 0);
+  const ok = await promptModal({
+    title: `Delete ${ids.length} selected cop${ids.length === 1 ? 'y' : 'ies'}?`,
+    sub: `This permanently deletes ${ids.length} real file${ids.length === 1 ? '' : 's'} from disk (${humanFileSize(bytes)}). This cannot be undone.`,
+    confirmText: `Delete ${ids.length}`, input: false, danger: true
+  });
+  if (!ok) return;
+
+  let done = 0, failed = 0;
+  for (const id of ids) {
+    const res = await api.realDelete(id).catch(() => null);
+    if (res && res.ok) done += 1; else failed += 1;
+  }
+  toast(failed ? `Deleted ${done}; ${failed} failed (drive offline?).` : `Deleted ${done} cop${done === 1 ? 'y' : 'ies'} from disk.`, !!failed);
+  await loadRail();
+  await loadDuplicates();
 }
 
 async function deleteDuplicate(it, copies) {

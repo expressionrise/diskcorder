@@ -247,6 +247,28 @@ async function importThumbs(volumeId, thumbMap, idMap) {
   return n;
 }
 
+// After a re-scan/sync the entry ids change, so rename each cached file from
+// its old id to the new id (matched by path via idRemap). Cached files whose
+// entry is gone (deleted on disk) are dropped. New ids are always greater than
+// old ones (AUTOINCREMENT), so a single pass can't clobber a not-yet-seen file.
+async function remapCache(volumeId, idRemap) {
+  const dir = dirFor(volumeId);
+  let files;
+  try { files = await fsp.readdir(dir); } catch { return; }
+  const map = new Map(Object.entries(idRemap || {}).map(([o, n]) => [Number(o), n]));
+  for (const f of files) {
+    const m = /^(\d+)\.(jpg|mp4)$/.exec(f);
+    if (!m) continue;
+    const oldId = Number(m[1]), ext = m[2];
+    const src = path.join(dir, f);
+    const newId = map.get(oldId);
+    if (newId == null) { await fsp.rm(src, { force: true }).catch(() => {}); continue; }
+    const dst = path.join(dir, `${newId}.${ext}`);
+    if (dst === src) continue;
+    try { await fsp.rm(dst, { force: true }); await fsp.rename(src, dst); } catch { /* skip */ }
+  }
+}
+
 // Delete the whole cache subtree for a volume (used on re-scan / removal).
 async function clearVolume(volumeId) {
   await fsp.rm(dirFor(volumeId), { recursive: true, force: true }).catch(() => {});
@@ -261,7 +283,7 @@ async function removeEntry(volumeId, entryId) {
 module.exports = {
   init, isVideo, isImage, isMedia, ffmpegAvailable,
   generateThumb, generatePreview,
-  hasThumb, hasPreview, countThumbs, cacheSize, checkMedia, exportThumbs, importThumbs, clearVolume, removeEntry,
+  hasThumb, hasPreview, countThumbs, cacheSize, checkMedia, exportThumbs, importThumbs, remapCache, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
   VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,
   get cacheDir() { return cacheDir; }

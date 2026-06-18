@@ -79,7 +79,7 @@ function isImageExt(ext) { return !!ext && IMAGE_EXTS.includes(ext.toLowerCase()
 function iconFor(isDir, ext) {
   if (isDir) return ICON.folder;
   const e = (ext || '').toLowerCase();
-  if (VIDEO_EXTS.includes(e)) return ICON.video;
+  if (VIDEO_EXTS.includes(e)) return ICON.film;
   if (IMAGE_EXTS.includes(e)) return ICON.image;
   if (AUDIO_EXTS.includes(e)) return ICON.audio;
   if (ARCHIVE_EXTS.includes(e)) return ICON.archive;
@@ -186,11 +186,10 @@ async function refreshReachability() {
     renderVolDetail(card, id);
   });
   await refreshCoverage();
-  // Auto-generate thumbnails for any drive that just became connected, so they
-  // fill in without the user pressing anything. Resumable + skips existing work.
-  for (const v of state.volumes) {
-    if (state.reachable[v.id] && !wasOnline[v.id]) queueAutoThumbs(v.id);
-  }
+  // Drives that just became connected: auto-sync (if enabled) then auto-thumbnail.
+  const justConnected = state.volumes.filter(v => state.reachable[v.id] && !wasOnline[v.id]).map(v => v.id);
+  for (const id of justConnected) queueAutoThumbs(id);
+  if (justConnected.length) autoSyncConnected(justConnected);
 }
 
 // Fill the rail's capacity bar from real disk usage when the drive is online,
@@ -234,6 +233,7 @@ function renderRail() {
 
     card.innerHTML = `
       <div class="vname">
+        <span class="vavatar" title="Click to change this drive's icon"></span>
         <span class="vname-text"></span>
         <span class="badge ${online ? 'online' : ''}">${online ? 'connected' : 'offline'}</span>
       </div>
@@ -253,23 +253,37 @@ function renderRail() {
       </div>
       <div class="vol-detail${v.id === state.activeVolumeId ? '' : ' hidden'}"></div>
       <div class="vol-actions">
-        <button class="mini" data-act="rescan" title="Re-scan this drive for new, changed, or removed files">Re-scan</button>
+        <button class="mini" data-act="sync" title="Update the catalog from the drive — add new files and drop ones you deleted. Keeps your notes, labels, and tags.">Sync</button>
+        <button class="mini" data-act="backup" title="Copy this drive's files to another connected drive (additive — copies new &amp; changed files, never deletes)">Backup</button>
+        <button class="mini" data-act="rescan" title="Re-pick this drive's location and rebuild its catalog (use if its drive letter changed)">Re-scan</button>
         <button class="mini" data-act="thumbs" title="Generate the still thumbnails for every image and video on this drive. Resumes where it left off and skips ones already made.">Thumbnails</button>
         <button class="mini" data-act="rename" title="Rename this drive's label in Diskcorder (the disk itself is untouched)">Rename label</button>
         <button class="mini" data-act="export" title="Save this drive's catalog to a .json file you can import elsewhere">Export catalog</button>
         <button class="mini mini-danger" data-act="remove" title="Forget this drive from Diskcorder (the disk and its files are untouched)">Forget drive</button>
-      </div>`;
+      </div>
+      <label class="vol-autosync" title="Automatically sync this drive's catalog whenever it connects">
+        <input type="checkbox" data-act="autosync" /> Auto-sync when connected
+      </label>`;
     card.querySelector('.vname-text').textContent = v.name;
+    const avatar = card.querySelector('.vavatar');
+    avatar.textContent = v.icon || '💾';
+    avatar.addEventListener('click', (e) => { e.stopPropagation(); pickDriveIcon(v); });
 
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.vol-actions')) return;
+      if (e.target.closest('.vol-actions') || e.target.closest('.vavatar') || e.target.closest('.vol-autosync')) return;
       openVolume(v);
     });
+    card.querySelector('[data-act="sync"]').addEventListener('click', () => syncDrive(v));
+    card.querySelector('[data-act="backup"]').addEventListener('click', () => openBackup(v));
     card.querySelector('[data-act="rescan"]').addEventListener('click', () => mapDrive(v));
     card.querySelector('[data-act="thumbs"]').addEventListener('click', () => generateThumbnails(v));
     card.querySelector('[data-act="rename"]').addEventListener('click', () => renameVolume(v));
     card.querySelector('[data-act="export"]').addEventListener('click', () => exportVolume(v));
     card.querySelector('[data-act="remove"]').addEventListener('click', () => removeVolume(v));
+    const autoCb = card.querySelector('[data-act="autosync"]');
+    autoCb.checked = !!getAutoSync()[v.id];
+    autoCb.addEventListener('click', (e) => e.stopPropagation());
+    autoCb.addEventListener('change', () => setAutoSync(v.id, autoCb.checked));
 
     list.appendChild(card);
     updateCapBar(card, v.id);
@@ -314,6 +328,47 @@ async function refreshCacheSize(id) {
   if (id == null) return;
   try { state.cacheBytes[id] = await api.cacheSize(id); } catch { return; }
   document.querySelectorAll(`.volume-card[data-id="${id}"]`).forEach(card => renderVolDetail(card, id));
+}
+
+const DRIVE_ICONS = ['💾','💿','📀','🗄️','📦','🎬','🎞️','🎥','📷','📸','🖼️','🎵','🎮','📁','🗂️','☁️','🔒','💼','🏠','⭐','🚀','🔴','🟢','🔵','🟡','🟣','🟠','🐧'];
+
+// Lightweight emoji picker for a drive's avatar icon.
+function pickDriveIcon(v) {
+  const backdrop = $('icon-modal');
+  const grid = $('icon-grid');
+  const clearBtn = $('icon-clear');
+  const cancelBtn = $('icon-cancel');
+
+  grid.innerHTML = '';
+  for (const emo of DRIVE_ICONS) {
+    const b = document.createElement('button');
+    b.className = 'icon-opt' + (v.icon === emo ? ' active' : '');
+    b.textContent = emo;
+    b.addEventListener('click', () => setIcon(emo));
+    grid.appendChild(b);
+  }
+  $('icon-modal-title').textContent = `Icon for “${v.name}”`;
+  backdrop.classList.remove('hidden');
+
+  async function setIcon(icon) {
+    cleanup();
+    await api.setVolumeIcon(v.id, icon);
+    await loadRail();
+  }
+  function cleanup() {
+    backdrop.classList.add('hidden');
+    clearBtn.removeEventListener('click', onClear);
+    cancelBtn.removeEventListener('click', cleanup);
+    backdrop.removeEventListener('mousedown', onBackdrop);
+    document.removeEventListener('keydown', onEsc);
+  }
+  const onClear = () => setIcon(null);
+  const onBackdrop = (e) => { if (e.target === backdrop) cleanup(); };
+  const onEsc = (e) => { if (e.key === 'Escape') cleanup(); };
+  clearBtn.addEventListener('click', onClear);
+  cancelBtn.addEventListener('click', cleanup);
+  backdrop.addEventListener('mousedown', onBackdrop);
+  document.addEventListener('keydown', onEsc);
 }
 
 async function renameVolume(v) {
@@ -396,18 +451,19 @@ async function loadListing() {
   if (state.activeVolumeId == null) { clearBrowser(); return; }
   $('listing-empty').classList.add('hidden');
 
-  // List + Gallery are flat, whole-drive views; Folders browses the tree.
+  const parent = state.trail[state.trail.length - 1];
+
+  // List + Gallery list every file under the CURRENT folder (recursively), so
+  // switching views keeps you in the same place; Folders browses the tree.
   if (state.fileView === 'list' || state.fileView === 'gallery') {
-    const rows = await api.listFiles(state.activeVolumeId);
+    const rows = await api.listFilesUnder(state.activeVolumeId, parent.id);
     sortEntries(rows, false);
-    $('breadcrumb').innerHTML =
-      `<span class="crumb current">All files · ${rows.length.toLocaleString()}${rows.length >= 20000 ? '+' : ''}</span>`;
+    renderBreadcrumb(rows.length);
     if (state.fileView === 'gallery') renderGallery(rows);
     else renderRows(rows, false, { showPath: true });
     return;
   }
 
-  const parent = state.trail[state.trail.length - 1];
   const rows = await api.getChildren(state.activeVolumeId, parent.id);
   sortEntries(rows, true);
   renderBreadcrumb();
@@ -427,6 +483,17 @@ function sortEntries(rows, foldersFirst) {
     switch (state.fileSort) {
       case 'size': r = sizeOf(a) - sizeOf(b); break;
       case 'date': r = String(a.mtime || '').localeCompare(String(b.mtime || '')); break;
+      case 'type': {
+        const ca = tmCategory(a), cb = tmCategory(b);
+        r = ca !== cb ? ca.localeCompare(cb) : (a.ext || '').localeCompare(b.ext || '');
+        break;
+      }
+      case 'flag': {
+        const fa = a.flag || '', fb = b.flag || '';
+        if (!fa !== !fb) return (fa ? -1 : 1);   // flagged first, both directions
+        r = fa.localeCompare(fb);
+        break;
+      }
       case 'label': {
         const la = a.alias || '', lb = b.alias || '';
         if (!la !== !lb) return (la ? -1 : 1);          // unlabeled last, both directions
@@ -508,7 +575,7 @@ function buildTreeNode(folder, depth) {
 
   const tog = document.createElement('span');
   tog.className = 'tree-toggle';
-  tog.textContent = '▸';
+  tog.textContent = '▶';
   const name = document.createElement('span');
   name.className = 'tree-name';
   name.textContent = folder.alias || folder.name;
@@ -521,12 +588,12 @@ function buildTreeNode(folder, depth) {
   tog.addEventListener('click', async (e) => {
     e.stopPropagation();
     open = !open;
-    tog.textContent = open ? '▾' : '▸';
+    tog.textContent = open ? '▼' : '▶';
     kidsWrap.classList.toggle('hidden', !open);
     if (open && !loaded) {
       loaded = true;
       const kids = (await api.getChildren(state.activeVolumeId, folder.id)).filter(k => k.is_dir);
-      if (!kids.length) { tog.textContent = '·'; tog.classList.add('leaf'); }
+      if (!kids.length) { tog.textContent = ''; tog.classList.add('leaf'); }
       for (const k of kids) kidsWrap.appendChild(buildTreeNode(k, depth + 1));
     }
   });
@@ -553,7 +620,7 @@ $('file-sort-dir').addEventListener('click', () => {
   if (state.activeVolumeId != null && !state.searching) loadListing();
 });
 
-function renderBreadcrumb() {
+function renderBreadcrumb(count) {
   const bc = $('breadcrumb');
   bc.innerHTML = '';
   state.trail.forEach((crumb, i) => {
@@ -573,6 +640,12 @@ function renderBreadcrumb() {
     });
     bc.appendChild(c);
   });
+  if (count != null) {
+    const meta = document.createElement('span');
+    meta.className = 'crumb-count';
+    meta.textContent = `${count.toLocaleString()}${count >= 20000 ? '+' : ''} file${count === 1 ? '' : 's'}`;
+    bc.appendChild(meta);
+  }
 }
 
 // Render a large item set incrementally: paint ~2 screens up front, then append
@@ -635,6 +708,8 @@ function makeFileRow(r, asSearch, showPath) {
   row.dataset.id = r.id;
   if (state.selectedEntry && state.selectedEntry.id === r.id) row.classList.add('selected');
 
+  const flag = makeFlagCell(r);
+
   const icon = document.createElement('span');
   icon.className = 'ic';
   icon.innerHTML = iconFor(r.is_dir, r.ext);
@@ -667,8 +742,9 @@ function makeFileRow(r, asSearch, showPath) {
   sz.textContent = r.is_dir ? humanFileSize(r.tree_size) : humanFileSize(r.size);
   if (r.is_dir) sz.classList.add('sz-dir');
 
-  row.append(icon, label, sz);
+  row.append(flag, icon, label, sz);
   row.addEventListener('click', () => selectEntry(r.id));
+  row.addEventListener('contextmenu', (e) => openContextMenu(e, r, asSearch));
   if (r.is_dir && !asSearch && !showPath) {
     row.addEventListener('dblclick', () => {
       state.trail.push({ id: r.id, name: r.alias || r.name });
@@ -678,7 +754,126 @@ function makeFileRow(r, asSearch, showPath) {
   return row;
 }
 
-// Gallery view: large thumbnail tiles for every file on the drive.
+// ---- per-file flag (star / heart / …) -----------------------------------
+
+const FLAG_EMOJIS = ['⭐', '❤️', '🔵', '🚩', '✅'];
+let flagPop = null;
+
+function makeFlagCell(r) {
+  const cell = document.createElement('span');
+  cell.className = 'flagcell' + (r.flag ? ' flagged' : '');
+  cell.textContent = r.flag || '☆';
+  cell.title = r.flag ? 'Change or clear flag' : 'Flag this file';
+  cell.addEventListener('click', (e) => { e.stopPropagation(); openFlagPicker(cell, r); });
+  return cell;
+}
+
+function openFlagPicker(anchor, r) {
+  closeFlagPicker();
+  const pop = document.createElement('div');
+  pop.className = 'flag-pop';
+  for (const emo of FLAG_EMOJIS) {
+    const b = document.createElement('button');
+    b.className = 'flag-opt' + (r.flag === emo ? ' active' : '');
+    b.textContent = emo;
+    b.addEventListener('click', (e) => { e.stopPropagation(); setRowFlag(r, emo === r.flag ? null : emo, anchor); closeFlagPicker(); });
+    pop.appendChild(b);
+  }
+  const clr = document.createElement('button');
+  clr.className = 'flag-opt flag-clear'; clr.textContent = '✕'; clr.title = 'Clear flag';
+  clr.addEventListener('click', (e) => { e.stopPropagation(); setRowFlag(r, null, anchor); closeFlagPicker(); });
+  pop.appendChild(clr);
+
+  document.body.appendChild(pop);
+  const rect = anchor.getBoundingClientRect();
+  pop.style.left = Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8) + 'px';
+  pop.style.top = (rect.bottom + 4) + 'px';
+  flagPop = pop;
+  setTimeout(() => document.addEventListener('mousedown', onFlagOutside), 0);
+}
+function onFlagOutside(e) { if (flagPop && !flagPop.contains(e.target)) closeFlagPicker(); }
+function closeFlagPicker() {
+  if (flagPop) { flagPop.remove(); flagPop = null; document.removeEventListener('mousedown', onFlagOutside); }
+}
+async function setRowFlag(r, flag, cell) {
+  await api.setFlag(r.id, flag).catch(() => {});
+  r.flag = flag || null;
+  if (cell) { cell.textContent = flag || '☆'; cell.classList.toggle('flagged', !!flag); }
+  document.querySelectorAll(`.row[data-id="${r.id}"] .flagcell, .grow[data-id="${r.id}"] .flagcell`).forEach(c => {
+    c.textContent = flag || '☆'; c.classList.toggle('flagged', !!flag);
+  });
+  if (state.selectedEntry && state.selectedEntry.id === r.id) state.selectedEntry.flag = r.flag;
+}
+
+// ---- right-click context menu (file rows in any view) --------------------
+
+let ctxMenu = null;
+function openContextMenu(e, r, asSearch) {
+  e.preventDefault();
+  closeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+
+  // quick flag row
+  const flags = document.createElement('div');
+  flags.className = 'ctx-flags';
+  for (const emo of FLAG_EMOJIS) {
+    const b = document.createElement('button');
+    b.className = 'ctx-flag' + (r.flag === emo ? ' active' : '');
+    b.textContent = emo;
+    b.addEventListener('click', () => { setRowFlag(r, emo === r.flag ? null : emo); closeContextMenu(); });
+    flags.appendChild(b);
+  }
+  const clr = document.createElement('button');
+  clr.className = 'ctx-flag'; clr.textContent = '✕'; clr.title = 'Clear flag';
+  clr.addEventListener('click', () => { setRowFlag(r, null); closeContextMenu(); });
+  flags.appendChild(clr);
+  menu.appendChild(flags);
+
+  const item = (label, fn, danger) => {
+    const it = document.createElement('button');
+    it.className = 'ctx-item' + (danger ? ' danger' : '');
+    it.textContent = label;
+    it.addEventListener('click', async () => { closeContextMenu(); await fn(); });
+    menu.appendChild(it);
+  };
+  const sep = () => { const s = document.createElement('div'); s.className = 'ctx-sep'; menu.appendChild(s); };
+
+  item('Details / preview', () => selectEntry(r.id));
+  if (!r.is_dir) item('Test for damage', async () => { await selectEntry(r.id); $('test-file').click(); });
+  item('Open file location', async () => {
+    const res = await api.revealInExplorer(r.id);
+    if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the location.', true);
+  });
+  sep();
+  item('Copy to…', async () => { await selectEntry(r.id); startTransferFlow(false); });
+  item('Move to…', async () => { await selectEntry(r.id); startTransferFlow(true); });
+  item('Rename on disk…', async () => { await selectEntry(r.id); $('real-rename').click(); });
+  sep();
+  item('Delete…', async () => { await selectEntry(r.id); $('real-delete').click(); }, true);
+
+  document.body.appendChild(menu);
+  const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
+  const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
+  menu.style.left = Math.max(8, x) + 'px';
+  menu.style.top = Math.max(8, y) + 'px';
+  ctxMenu = menu;
+  setTimeout(() => {
+    document.addEventListener('mousedown', onCtxOutside);
+    document.addEventListener('keydown', onCtxEsc);
+    window.addEventListener('blur', closeContextMenu, { once: true });
+  }, 0);
+}
+function onCtxOutside(e) { if (ctxMenu && !ctxMenu.contains(e.target)) closeContextMenu(); }
+function onCtxEsc(e) { if (e.key === 'Escape') closeContextMenu(); }
+function closeContextMenu() {
+  if (!ctxMenu) return;
+  ctxMenu.remove(); ctxMenu = null;
+  document.removeEventListener('mousedown', onCtxOutside);
+  document.removeEventListener('keydown', onCtxEsc);
+}
+
+// Gallery view: a list like the others, but each row has a large thumbnail.
 function renderGallery(rows) {
   const listing = $('listing');
   listing.classList.add('gallery');
@@ -693,25 +888,40 @@ function renderGallery(rows) {
   }
   const volId = state.activeVolumeId;
   lazyRender(listing, rows, (r) => {
-    const tile = document.createElement('div');
-    tile.className = 'gtile';
-    tile.dataset.id = r.id;
-    if (state.selectedEntry && state.selectedEntry.id === r.id) tile.classList.add('selected');
+    const row = document.createElement('div');
+    row.className = 'grow';
+    row.dataset.id = r.id;
+    if (state.selectedEntry && state.selectedEntry.id === r.id) row.classList.add('selected');
+
+    const flag = makeFlagCell(r);
 
     const thumb = document.createElement('div');
-    thumb.className = 'gthumb ic';
+    thumb.className = 'gthumb-lg ic';
     thumb.innerHTML = iconFor(r.is_dir, r.ext);
     if (isVideoExt(r.ext)) { thumb.classList.add('thumb'); wireThumb(thumb, volId, r.id); }
     else if (isImageExt(r.ext)) { thumb.classList.add('thumb'); wireImageThumb(thumb, volId, r.id); }
 
-    const cap = document.createElement('div');
-    cap.className = 'gcap';
-    cap.textContent = r.alias || r.name;
-    cap.title = r.rel_path;
+    const label = document.createElement('div');
+    label.className = 'label';
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = r.alias || r.name;
+    if (r.note) { const dot = document.createElement('span'); dot.className = 'note-dot'; dot.title = 'Has notes'; nm.appendChild(dot); }
+    const sub = document.createElement('div');
+    sub.className = 'sub sub-link';
+    sub.textContent = r.rel_path;
+    sub.title = 'Open this folder';
+    sub.addEventListener('click', (e) => { e.stopPropagation(); navigateToFolder(r.parent_id ?? null); });
+    label.append(nm, sub);
 
-    tile.append(thumb, cap);
-    tile.addEventListener('click', () => selectEntry(r.id));
-    return tile;
+    const sz = document.createElement('span');
+    sz.className = 'sz';
+    sz.textContent = humanFileSize(r.size);
+
+    row.append(flag, thumb, label, sz);
+    row.addEventListener('click', () => selectEntry(r.id));
+    row.addEventListener('contextmenu', (e) => openContextMenu(e, r, false));
+    return row;
   });
 }
 
@@ -1277,6 +1487,367 @@ async function mapDrive(existingVol) {
   }
 }
 
+// Sync = re-scan in place from the drive's saved location (no folder picker),
+// reconciling the catalog with what's actually on the disk now. Removed files
+// drop out, new files appear; notes/labels/tags are preserved by path.
+async function syncDrive(v, auto = false) {
+  if (scanning) return;
+  if (!state.reachable[v.id] || !v.root_path) {
+    if (!auto) toast('Connect “' + v.name + '” to sync its catalog.', true);
+    return;
+  }
+  const before = v.file_count || 0;
+
+  scanning = true;
+  $('map-drive').disabled = true;
+  showScan(true);
+  $('scan-title').textContent = `Syncing ${v.name}…`;
+  const unsub = api.onScanProgress(({ count, current }) => {
+    $('scan-count').textContent = `${count.toLocaleString()} items`;
+    $('scan-current').textContent = current || '';
+  });
+
+  try {
+    const res = await api.scanDrive({ root: v.root_path, name: v.name, existingVolumeId: v.id });
+    if (res && res.canceled) { if (!auto) toast('Sync canceled.'); return; }
+    if (!res || !res.ok) { toast(res && res.error ? res.error : 'Sync failed.', true); return; }
+    await loadRail();
+    const vol = state.volumes.find(x => x.id === res.volumeId) || v;
+    const delta = (vol.file_count || 0) - before;
+    const deltaStr = delta === 0 ? 'no changes' : `${delta > 0 ? '+' : ''}${delta.toLocaleString()} files`;
+    toast(`Synced “${vol.name}” — ${(vol.file_count || 0).toLocaleString()} files (${deltaStr}).`);
+    // Entry ids changed, so reopen at the root to avoid a stale breadcrumb trail.
+    if (vol.id === state.activeVolumeId) await openVolume(vol);
+    if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);   // thumbnail any new media
+  } catch (err) {
+    toast(err.message || 'Sync failed.', true);
+  } finally {
+    unsub();
+    showScan(false);
+    scanning = false;
+    $('map-drive').disabled = false;
+  }
+}
+
+// ---- backup to another drive ---------------------------------------------
+
+const ROOT_FILES = ' root-files';   // sentinel for the "files in drive root" row
+
+async function openBackup(v) {
+  if (!state.reachable[v.id]) { toast('Connect “' + v.name + '” first.', true); return; }
+  const dests = state.volumes.filter(x => x.id !== v.id && state.reachable[x.id]);
+  if (!dests.length) { toast('Connect another drive to back up to.', true); return; }
+
+  const backdrop = $('backup-modal');
+  const destSel = $('backup-dest');
+  const foldersBox = $('backup-folders');
+  const progress = $('backup-progress');
+  const startBtn = $('backup-start');
+  const cancelBtn = $('backup-cancel');
+
+  $('backup-title').textContent = `Back up “${v.name}”`;
+  $('backup-sub').textContent = 'Copies new and changed files into a folder named after this drive. Nothing at the destination is deleted.';
+  destSel.disabled = false;
+  destSel.innerHTML = '';
+  for (const d of dests) {
+    const o = document.createElement('option');
+    o.value = d.id; o.textContent = (d.icon ? d.icon + ' ' : '') + d.name;
+    destSel.appendChild(o);
+  }
+
+  foldersBox.innerHTML = '<div class="backup-loading">Loading folders…</div>';
+  const kids = await api.getChildren(v.id, null).catch(() => []);
+  const topFolders = kids.filter(k => k.is_dir);
+  const rootFiles = kids.filter(k => !k.is_dir);
+  foldersBox.innerHTML = '';
+  const addRow = (label, value) => {
+    const lab = document.createElement('label');
+    lab.className = 'backup-folder';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.value = value; cb.checked = true;
+    const span = document.createElement('span'); span.textContent = label;
+    lab.append(cb, span); foldersBox.appendChild(lab);
+  };
+  if (!topFolders.length && !rootFiles.length) foldersBox.innerHTML = '<div class="backup-loading">This drive is empty.</div>';
+  for (const f of topFolders) addRow('📁 ' + (f.alias || f.name), f.rel_path);
+  if (rootFiles.length) addRow(`🗎 Files in the drive root (${rootFiles.length})`, ROOT_FILES);
+
+  progress.classList.add('hidden');
+  progress.classList.remove('active');
+  startBtn.disabled = false; startBtn.textContent = 'Start backup';
+  cancelBtn.textContent = 'Cancel';
+  backdrop.classList.remove('hidden');
+
+  let unsub = null, running = false;
+
+  function collectItems() {
+    const items = [];
+    foldersBox.querySelectorAll('input[type=checkbox]:checked').forEach(cb => {
+      if (cb.value === ROOT_FILES) for (const rf of rootFiles) items.push(rf.rel_path);
+      else items.push(cb.value);
+    });
+    return items;
+  }
+  function showStats(p) {
+    $('backup-stats').textContent =
+      `${(p.copied || 0).toLocaleString()} copied · ${humanFileSize(p.copiedBytes || 0)} · ` +
+      `${(p.skipped || 0).toLocaleString()} skipped` + (p.errors ? ` · ${p.errors} errors` : '');
+  }
+
+  async function start() {
+    const items = collectItems();
+    if (!items.length) { toast('Pick at least one folder to back up.', true); return; }
+    running = true;
+    startBtn.disabled = true; destSel.disabled = true;
+    foldersBox.querySelectorAll('input').forEach(i => i.disabled = true);
+    progress.classList.remove('hidden');
+    progress.classList.add('active');
+    showStats({});
+    $('backup-current').textContent = 'Scanning…';
+    cancelBtn.textContent = 'Cancel';
+
+    unsub = api.onBackupProgress((p) => {
+      showStats(p);
+      $('backup-current').textContent = p.finished ? 'Finishing…' : (p.current ? 'Copying ' + p.current : 'Working…');
+    });
+    const destName = destSel.options[destSel.selectedIndex].textContent;
+    const res = await api.startBackup({ srcVolumeId: v.id, destVolumeId: Number(destSel.value), items })
+      .catch(e => ({ ok: false, error: e.message }));
+    if (unsub) { unsub(); unsub = null; }
+    running = false;
+    progress.classList.remove('active');
+
+    if (!res || (!res.ok && !res.canceled)) {
+      $('backup-current').textContent = '';
+      toast(res && res.error ? res.error : 'Backup failed.', true);
+    } else if (res.canceled) {
+      $('backup-current').textContent = 'Canceled.';
+      toast('Backup canceled.');
+    } else {
+      showStats(res);
+      $('backup-current').textContent =
+        `Done — ${res.copied.toLocaleString()} copied, ${res.skipped.toLocaleString()} unchanged` +
+        (res.errors ? `, ${res.errors} errors` : '') + '.';
+      toast(`Backed up ${res.copied.toLocaleString()} file${res.copied === 1 ? '' : 's'} (${humanFileSize(res.copiedBytes)}) to “${destName}”.`, !!res.errors);
+    }
+    startBtn.disabled = false; startBtn.textContent = 'Back up again';
+    destSel.disabled = false;
+    foldersBox.querySelectorAll('input').forEach(i => i.disabled = false);
+    cancelBtn.textContent = 'Close';
+  }
+
+  function onCancelOrClose() {
+    if (running) { api.cancelBackup(); cancelBtn.textContent = 'Canceling…'; return; }
+    cleanup();
+  }
+  function cleanup() {
+    if (running) api.cancelBackup();
+    if (unsub) { unsub(); unsub = null; }
+    backdrop.classList.add('hidden');
+    startBtn.removeEventListener('click', start);
+    cancelBtn.removeEventListener('click', onCancelOrClose);
+    backdrop.removeEventListener('mousedown', onBackdrop);
+    document.removeEventListener('keydown', onEsc);
+  }
+  const onBackdrop = (e) => { if (e.target === backdrop && !running) cleanup(); };
+  const onEsc = (e) => { if (e.key === 'Escape' && !running) cleanup(); };
+  startBtn.addEventListener('click', start);
+  cancelBtn.addEventListener('click', onCancelOrClose);
+  backdrop.addEventListener('mousedown', onBackdrop);
+  document.addEventListener('keydown', onEsc);
+}
+
+// ---- backup tab (saved actions + run logs) -------------------------------
+
+$('backup-new').addEventListener('click', () => openJobForm(null));
+$('logdetail-close').addEventListener('click', () => $('logdetail-modal').classList.add('hidden'));
+$('logdetail-modal').addEventListener('mousedown', (e) => { if (e.target.id === 'logdetail-modal') $('logdetail-modal').classList.add('hidden'); });
+
+async function loadBackupTab() {
+  await renderBackupJobs();
+  await renderBackupLog();
+}
+
+async function renderBackupJobs() {
+  const box = $('backup-jobs');
+  const jobs = await api.listBackupJobs().catch(() => []);
+  box.innerHTML = '';
+  if (!jobs.length) {
+    box.innerHTML = '<div class="backup-empty">No backup actions yet. Click “New backup” to create one — pick a source folder (a drive, a phone folder, anything) and where to copy it.</div>';
+    return;
+  }
+  for (const job of jobs) box.appendChild(buildJobCard(job));
+}
+
+let backupRunning = false, runningJobId = null;
+
+function buildJobCard(job) {
+  const card = document.createElement('div');
+  card.className = 'job-card';
+  card.dataset.id = job.id;
+
+  const top = document.createElement('div');
+  top.className = 'job-top';
+  const nm = document.createElement('div'); nm.className = 'job-name'; nm.textContent = job.name;
+  const acts = document.createElement('div'); acts.className = 'job-acts';
+  const runB = document.createElement('button'); runB.className = 'btn btn-primary mini-btn'; runB.textContent = 'Run';
+  const editB = document.createElement('button'); editB.className = 'btn btn-ghost mini-btn'; editB.textContent = 'Edit';
+  const delB = document.createElement('button'); delB.className = 'btn btn-ghost-danger mini-btn'; delB.textContent = 'Delete';
+  acts.append(runB, editB, delB);
+  top.append(nm, acts);
+
+  const paths = document.createElement('div');
+  paths.className = 'job-paths';
+  const s = document.createElement('span'); s.className = 'job-src'; s.textContent = job.source; s.title = job.source;
+  const a = document.createElement('span'); a.className = 'job-arrow'; a.textContent = '→';
+  const d = document.createElement('span'); d.className = 'job-dst'; d.textContent = job.dest; d.title = job.dest;
+  paths.append(s, a, d);
+
+  const last = document.createElement('div');
+  last.className = 'job-last';
+  last.textContent = job.lastRun
+    ? `Last run ${fmtDate(job.lastRun.when)} — ${job.lastRun.copied.toLocaleString()} copied, ${job.lastRun.skipped.toLocaleString()} unchanged` + (job.lastRun.errors ? `, ${job.lastRun.errors} errors` : '')
+    : 'Never run';
+
+  const prog = document.createElement('div');
+  prog.className = 'job-prog hidden';
+  prog.innerHTML = `<div class="backup-bar"><div class="backup-bar-fill"></div></div><div class="job-prog-text"></div>`;
+
+  card.append(top, paths, last, prog);
+
+  runB.addEventListener('click', () => {
+    if (backupRunning) { if (runningJobId === job.id) api.cancelBackup(); else toast('A backup is already running.'); return; }
+    runJob(job, card, runB);
+  });
+  editB.addEventListener('click', () => { if (!backupRunning) openJobForm(job); });
+  delB.addEventListener('click', async () => {
+    if (backupRunning) return;
+    const ok = await promptModal({ title: `Delete “${job.name}”?`, sub: 'Removes this backup action. Files already backed up are left untouched.', confirmText: 'Delete', input: false, danger: true });
+    if (!ok) return;
+    await api.deleteBackupJob(job.id);
+    renderBackupJobs();
+  });
+  return card;
+}
+
+async function runJob(job, card, runB) {
+  backupRunning = true; runningJobId = job.id;
+  const prog = card.querySelector('.job-prog');
+  const ptext = card.querySelector('.job-prog-text');
+  prog.classList.remove('hidden'); prog.classList.add('active');
+  runB.textContent = 'Cancel'; runB.classList.remove('btn-primary'); runB.classList.add('btn-ghost-danger');
+  ptext.textContent = 'Scanning…';
+
+  const unsub = api.onBackupProgress((p) => {
+    if (p.jobId && p.jobId !== job.id) return;
+    ptext.textContent = (p.finished ? 'Finishing…' : (p.current ? 'Copying ' + p.current : 'Working…')) +
+      ` · ${(p.copied || 0).toLocaleString()} copied · ${humanFileSize(p.copiedBytes || 0)} · ${(p.skipped || 0).toLocaleString()} skipped` +
+      (p.errors ? ` · ${p.errors} err` : '');
+  });
+  const res = await api.runBackupPath({ source: job.source, dest: job.dest, name: job.name, jobId: job.id }).catch(e => ({ ok: false, error: e.message }));
+  unsub();
+  backupRunning = false; runningJobId = null;
+
+  if (!res || (!res.ok && !res.canceled)) toast(res && res.error ? res.error : 'Backup failed.', true);
+  else if (res.canceled) toast('Backup canceled.');
+  else toast(`Backed up “${job.name}” — ${res.copied.toLocaleString()} copied, ${res.skipped.toLocaleString()} unchanged` + (res.errors ? `, ${res.errors} errors` : '') + '.', !!res.errors);
+
+  await renderBackupJobs();
+  await renderBackupLog();
+}
+
+function openJobForm(job) {
+  const backdrop = $('jobform-modal');
+  $('jobform-title').textContent = job ? 'Edit backup action' : 'New backup action';
+  $('jobform-name').value = job ? job.name : '';
+  $('jobform-source').value = job ? job.source : '';
+  $('jobform-dest').value = job ? job.dest : '';
+  backdrop.classList.remove('hidden');
+  $('jobform-name').focus();
+
+  const ps = $('jobform-pick-source'), pd = $('jobform-pick-dest'), saveB = $('jobform-save'), cancelB = $('jobform-cancel');
+  const baseName = (p) => p.split(/[\\/]/).filter(Boolean).pop() || p;
+  const pickSrc = async () => {
+    const p = await api.pickBackupFolder('Choose the folder to back up');
+    if (p) { $('jobform-source').value = p; if (!$('jobform-name').value.trim()) $('jobform-name').value = baseName(p); }
+  };
+  const pickDst = async () => { const p = await api.pickBackupFolder('Choose where to back up to'); if (p) $('jobform-dest').value = p; };
+  async function save() {
+    const source = $('jobform-source').value.trim(), dest = $('jobform-dest').value.trim();
+    const name = $('jobform-name').value.trim() || (source ? baseName(source) : 'Backup');
+    if (!source || !dest) { toast('Pick a source and a destination folder.', true); return; }
+    await api.saveBackupJob({ id: job ? job.id : null, name, source, dest, lastRun: job ? job.lastRun : null });
+    cleanup();
+    renderBackupJobs();
+  }
+  function cleanup() {
+    backdrop.classList.add('hidden');
+    ps.removeEventListener('click', pickSrc); pd.removeEventListener('click', pickDst);
+    saveB.removeEventListener('click', save); cancelB.removeEventListener('click', cleanup);
+    backdrop.removeEventListener('mousedown', onBd); document.removeEventListener('keydown', onEsc);
+  }
+  const onBd = (e) => { if (e.target === backdrop) cleanup(); };
+  const onEsc = (e) => { if (e.key === 'Escape') cleanup(); };
+  ps.addEventListener('click', pickSrc); pd.addEventListener('click', pickDst);
+  saveB.addEventListener('click', save); cancelB.addEventListener('click', cleanup);
+  backdrop.addEventListener('mousedown', onBd); document.addEventListener('keydown', onEsc);
+}
+
+async function renderBackupLog() {
+  const box = $('backup-log');
+  const idx = await api.backupLogIndex().catch(() => []);
+  box.innerHTML = '';
+  if (!idx.length) { box.innerHTML = '<div class="backup-empty">No backup runs yet.</div>'; return; }
+  for (const r of idx.slice(0, 50)) {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    const when = document.createElement('span'); when.className = 'log-when'; when.textContent = fmtDate(r.when);
+    const name = document.createElement('span'); name.className = 'log-name'; name.textContent = r.name + (r.canceled ? ' (canceled)' : '');
+    const st = document.createElement('span'); st.className = 'log-stats';
+    st.textContent = `${r.copied.toLocaleString()} copied · ${r.skipped.toLocaleString()} unchanged` + (r.errors ? ` · ${r.errors} err` : '') + ` · ${humanFileSize(r.copiedBytes)}`;
+    row.append(when, name, st);
+    row.addEventListener('click', () => openLogDetail(r.runId));
+    box.appendChild(row);
+  }
+}
+
+async function openLogDetail(runId) {
+  const d = await api.backupLogDetail(runId).catch(() => null);
+  if (!d) { toast('That log is no longer available.', true); return; }
+  $('logdetail-title').textContent = d.name + (d.canceled ? ' (canceled)' : '');
+  $('logdetail-sub').textContent =
+    `${fmtDate(d.when)} · ${d.source} → ${d.dest} · ${d.copied.toLocaleString()} copied, ${d.skipped.toLocaleString()} unchanged` + (d.errors ? `, ${d.errors} errors` : '');
+  const box = $('logdetail-files');
+  box.innerHTML = '';
+  if (!d.files || !d.files.length) {
+    box.innerHTML = '<div class="backup-empty">No files were copied in this run (everything was already up to date).</div>';
+  } else {
+    const frag = document.createDocumentFragment();
+    for (const f of d.files) { const el = document.createElement('div'); el.className = 'logfile'; el.textContent = f; frag.appendChild(el); }
+    box.appendChild(frag);
+  }
+  $('logdetail-modal').classList.remove('hidden');
+}
+
+// Per-drive "auto-sync on connect" preference, kept in localStorage.
+function getAutoSync() {
+  try { return JSON.parse(localStorage.getItem('diskcorder-autosync') || '{}'); } catch { return {}; }
+}
+function setAutoSync(id, on) {
+  const m = getAutoSync();
+  if (on) m[id] = true; else delete m[id];
+  try { localStorage.setItem('diskcorder-autosync', JSON.stringify(m)); } catch { /* ignore */ }
+}
+
+// Sync (sequentially) any auto-sync drives that just became connected.
+async function autoSyncConnected(ids) {
+  const on = getAutoSync();
+  for (const id of ids) {
+    if (!on[id]) continue;
+    const v = state.volumes.find(x => x.id === id);
+    if (v && state.reachable[id]) await syncDrive(v, true);
+  }
+}
+
 // Only one thumbnail pass runs at a time (the main process keeps a single set
 // of pause/cancel controls), so auto and manual passes are serialized here.
 let thumbsBusy = false;
@@ -1547,14 +2118,16 @@ $('tab-files').addEventListener('click', () => switchTab('files'));
 $('tab-large').addEventListener('click', () => switchTab('large'));
 $('tab-space').addEventListener('click', () => switchTab('space'));
 $('tab-dupes').addEventListener('click', () => switchTab('dupes'));
+$('tab-backup').addEventListener('click', () => switchTab('backup'));
 
 function switchTab(tab) {
   if (state.tab === tab) return;
   state.tab = tab;
-  for (const t of ['files', 'large', 'space', 'dupes']) {
+  for (const t of ['files', 'large', 'space', 'dupes', 'backup']) {
     $('tab-' + t).classList.toggle('active', tab === t);
     $('view-' + t).classList.toggle('hidden', tab !== t);
   }
+  if (tab === 'backup') loadBackupTab();
   if (tab === 'space') {
     if (!state.tmTrail.length && state.activeVolumeId != null) {
       const v = state.volumes.find(x => x.id === state.activeVolumeId);
@@ -1588,6 +2161,11 @@ function sortLarge(rows) {
     switch (key) {
       case 'date':     return String(b.mtime || '').localeCompare(String(a.mtime || ''));   // newest first
       case 'date-asc': return String(a.mtime || '').localeCompare(String(b.mtime || ''));   // oldest first
+      case 'type': {
+        const ca = tmCategory(a), cb = tmCategory(b);
+        return ca !== cb ? ca.localeCompare(cb)
+          : (a.ext || '').localeCompare(b.ext || '') || (b.size || 0) - (a.size || 0);
+      }
       case 'name':     return (a.alias || a.name || '').toLowerCase().localeCompare((b.alias || b.name || '').toLowerCase());
       default:         return (b.size || 0) - (a.size || 0);                                 // largest first
     }
@@ -1671,6 +2249,8 @@ function buildLargeRow(r, rank) {
   row.dataset.id = r.id;
   if (state.selectedEntry && state.selectedEntry.id === r.id) row.classList.add('selected');
 
+  const flag = makeFlagCell(r);
+
   const rankEl = document.createElement('span');
   rankEl.className = 'lg-rank';
   rankEl.textContent = rank;
@@ -1700,8 +2280,9 @@ function buildLargeRow(r, rank) {
   sz.className = 'sz';
   sz.textContent = humanFileSize(r.size);
 
-  row.append(rankEl, icon, label, date, sz);
+  row.append(flag, rankEl, icon, label, date, sz);
   row.addEventListener('click', () => selectEntry(r.id));
+  row.addEventListener('contextmenu', (e) => openContextMenu(e, r, false));
   return row;
 }
 
@@ -1917,13 +2498,17 @@ function tmCategory(item) {
 }
 const tmValue = (it) => it.is_dir ? (it.tree_size || 0) : (it.size || 0);
 
-let tmCanvas, tmCtx;
+let tmCanvas, tmCtx, tmHovered = null;
+const tmVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
 function tmInit() {
   tmCanvas = $('tm-canvas');
   tmCtx = tmCanvas.getContext('2d');
   tmRenderLegend();
   tmCanvas.addEventListener('mousemove', tmHover);
-  tmCanvas.addEventListener('mouseleave', () => $('tm-tip').classList.add('hidden'));
+  tmCanvas.addEventListener('mouseleave', () => {
+    $('tm-tip').classList.add('hidden');
+    if (tmHovered) { tmHovered = null; tmDraw(); }
+  });
   tmCanvas.addEventListener('click', tmClick);
   window.addEventListener('resize', () => { if (state.tab === 'space') tmResize(); });
 }
@@ -1944,30 +2529,71 @@ function tmResize() {
   tmCanvas.style.width = stage.width + 'px';
   tmCanvas.style.height = stage.height + 'px';
   tmCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  tmRelayout();
   tmDraw();
+}
+
+// Compute the tile rectangles for the current level (separate from drawing so
+// hover highlights can repaint without re-running the squarify layout).
+function tmRelayout() {
+  tmHovered = null;
+  const dpr = window.devicePixelRatio || 1;
+  const W = tmCanvas.width / dpr, H = tmCanvas.height / dpr;
+  state.tmTiles = tmLayout(state.tmItems, 2, 2, W - 4, H - 4);
 }
 
 function tmDraw() {
   const dpr = window.devicePixelRatio || 1;
   const W = tmCanvas.width / dpr, H = tmCanvas.height / dpr;
   tmCtx.clearRect(0, 0, W, H);
-  state.tmTiles = tmLayout(state.tmItems, 2, 2, W - 4, H - 4);
   $('tm-empty').classList.toggle('hidden', state.tmItems.length > 0 && state.activeVolumeId != null);
   if (state.activeVolumeId == null) { $('tm-empty').textContent = 'Open a drive to see its space map.'; return; }
 
-  tmCtx.font = '12px Inter, system-ui, sans-serif';
-  tmCtx.textBaseline = 'top';
+  const gap = tmVar('--bg') || '#0d1117';
+  const accent = tmVar('--accent') || '#d4af37';
+  const total = state.tmItems.reduce((s, it) => s + Math.max(tmValue(it), 0), 0) || 1;
+
   for (const t of state.tmTiles) {
+    const hovered = t === tmHovered;
+    const radius = Math.min(4, t.w / 2, t.h / 2);
+
+    // base colour + a soft top-light / bottom-shade gradient for depth
+    tmRoundRect(t.x, t.y, t.w, t.h, radius);
     tmCtx.fillStyle = TM_COLORS[tmCategory(t.it)];
-    tmRoundRect(t.x, t.y, t.w, t.h, 2); tmCtx.fill();
-    tmCtx.strokeStyle = 'rgba(13,17,23,0.55)'; tmCtx.lineWidth = 1;
-    tmRoundRect(t.x + 0.5, t.y + 0.5, t.w - 1, t.h - 1, 2); tmCtx.stroke();
-    if (t.w > 54 && t.h > 22) {
+    tmCtx.fill();
+    const g = tmCtx.createLinearGradient(0, t.y, 0, t.y + t.h);
+    g.addColorStop(0, 'rgba(255,255,255,0.16)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.14)');
+    tmRoundRect(t.x, t.y, t.w, t.h, radius);
+    tmCtx.fillStyle = g;
+    tmCtx.fill();
+    if (hovered) {
+      tmRoundRect(t.x, t.y, t.w, t.h, radius);
+      tmCtx.fillStyle = 'rgba(255,255,255,0.16)';
+      tmCtx.fill();
+    }
+
+    // separator that matches the panel background (gap look), accent on hover
+    tmCtx.lineWidth = hovered ? 2 : 1.25;
+    tmCtx.strokeStyle = hovered ? accent : gap;
+    tmRoundRect(t.x + 0.7, t.y + 0.7, t.w - 1.4, t.h - 1.4, radius);
+    tmCtx.stroke();
+
+    // label: name, plus size + share of the level when there's room
+    if (t.w > 56 && t.h > 22) {
       tmCtx.save();
-      tmCtx.beginPath(); tmCtx.rect(t.x + 4, t.y + 3, t.w - 8, t.h - 6); tmCtx.clip();
+      tmCtx.beginPath(); tmCtx.rect(t.x + 5, t.y + 4, t.w - 10, t.h - 8); tmCtx.clip();
+      tmCtx.textBaseline = 'top';
       tmCtx.fillStyle = 'rgba(13,17,23,0.92)';
-      tmCtx.fillText(t.it.name, t.x + 5, t.y + 4);
-      if (t.h > 38) { tmCtx.fillStyle = 'rgba(13,17,23,0.7)'; tmCtx.fillText(humanFileSize(tmValue(t.it)), t.x + 5, t.y + 20); }
+      tmCtx.font = '600 12px Inter, system-ui, sans-serif';
+      tmCtx.fillText(t.it.name, t.x + 7, t.y + 5);
+      if (t.h > 40) {
+        const pct = Math.round(tmValue(t.it) / total * 100);
+        tmCtx.fillStyle = 'rgba(13,17,23,0.65)';
+        tmCtx.font = '11px Inter, system-ui, sans-serif';
+        tmCtx.fillText(humanFileSize(tmValue(t.it)) + (pct >= 1 ? `  ·  ${pct}%` : ''), t.x + 7, t.y + 22);
+      }
       tmCtx.restore();
     }
   }
@@ -2037,12 +2663,22 @@ function tmTileAt(px, py) {
 function tmHover(e) {
   const r = tmCanvas.getBoundingClientRect();
   const t = tmTileAt(e.clientX - r.left, e.clientY - r.top);
+  if (t !== tmHovered) { tmHovered = t; tmDraw(); }    // repaint highlight
+  tmCanvas.style.cursor = (t && t.it.is_dir) ? 'pointer' : 'default';
+
   const tip = $('tm-tip');
   if (!t) { tip.classList.add('hidden'); return; }
-  const kind = t.it.is_dir ? ' · folder' : (t.it.ext ? ` · .${t.it.ext}` : '');
+  const total = state.tmItems.reduce((s, it) => s + Math.max(tmValue(it), 0), 0) || 1;
+  const pct = Math.round(tmValue(t.it) / total * 100);
+  const kind = t.it.is_dir ? 'folder' : (t.it.ext ? `.${t.it.ext}` : 'file');
   tip.innerHTML = '';
   const strong = document.createElement('strong'); strong.textContent = t.it.name;
-  tip.append(strong, document.createElement('br'), document.createTextNode(humanFileSize(tmValue(t.it)) + kind));
+  tip.append(
+    strong,
+    document.createElement('br'),
+    document.createTextNode(`${humanFileSize(tmValue(t.it))} · ${pct}% of this level · ${kind}` +
+      (t.it.is_dir ? ' · click to open' : ''))
+  );
   tip.style.left = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px';
   tip.style.top = (e.clientY + 14) + 'px';
   tip.classList.remove('hidden');

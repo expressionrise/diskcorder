@@ -64,6 +64,7 @@
         <button id="tab-large" class="tab">Large files</button>
         <button id="tab-space" class="tab">Space map</button>
         <button id="tab-dupes" class="tab">Duplicates</button>
+        <button id="tab-backup" class="tab">Backup</button>
       </div>
 
       <div id="view-files" class="view">
@@ -80,6 +81,8 @@
                 <option value="name">Name</option>
                 <option value="size">Size</option>
                 <option value="date">Date</option>
+                <option value="type">Type</option>
+                <option value="flag">Symbol</option>
                 <option value="label">Label</option>
                 <option value="tag">Tag</option>
               </select>
@@ -119,6 +122,7 @@
                 <option value="size">Largest</option>
                 <option value="date">Newest</option>
                 <option value="date-asc">Oldest</option>
+                <option value="type">Type</option>
                 <option value="name">Name</option>
               </select>
             </label>
@@ -160,6 +164,18 @@
           <button id="dupes-delete-sel" class="btn btn-ghost-danger mini-btn" disabled>Delete selected</button>
         </div>
         <div id="dupes-list" class="dupes-list"></div>
+      </div>
+
+      <div id="view-backup" class="view hidden">
+        <div class="backup-head">
+          <span class="backup-head-title">Backup actions</span>
+          <button id="backup-new" class="btn btn-primary mini-btn">New backup</button>
+        </div>
+        <div class="backup-tab-body">
+          <div id="backup-jobs" class="backup-jobs"></div>
+          <div class="backup-log-head">Recent runs</div>
+          <div id="backup-log" class="backup-log"></div>
+        </div>
       </div>
     </section>
 
@@ -242,7 +258,13 @@
           <li>A blue <strong>coverage bar</strong> shows how many thumbnails already exist
               (e.g. <code>1,240 / 5,678 thumbnails</code>); a gold bar appears below it while a
               generation pass is running.</li>
-          <li><strong>Re-scan</strong> — refresh the catalog for new, changed, or removed files.</li>
+          <li><strong>Sync</strong> — update the catalog from the connected drive: new files are added,
+              deleted ones drop out, and your notes, labels, and tags are kept. Tick
+              <strong>Auto-sync when connected</strong> on a drive to do this automatically each time it's plugged in.</li>
+          <li><strong>Backup</strong> — copy this drive's files to another connected drive. Pick the
+              destination and which top-level folders to include; it copies new and changed files and
+              skips unchanged ones (additive — it never deletes anything at the destination).</li>
+          <li><strong>Re-scan</strong> — re-pick the drive's location and rebuild its catalog (use if its drive letter changed).</li>
           <li><strong>Thumbnails</strong> — generate the still thumbnails for every image and video on
               this drive. It resumes where it left off and skips anything already made, so re-running is
               fast. (Thumbnails are also created automatically after a scan and on demand as you browse.)</li>
@@ -278,6 +300,75 @@
       </div>
       <div class="modal-actions">
         <button class="btn btn-primary" id="info-close">Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backup job form -->
+  <div class="modal-backdrop hidden" id="jobform-modal">
+    <div class="modal">
+      <h2 id="jobform-title">New backup action</h2>
+      <label class="field-label" for="jobform-name">Name</label>
+      <input id="jobform-name" class="field" type="text" placeholder="e.g. Phone photos → HDD" />
+      <label class="field-label">Source folder (what to back up)</label>
+      <div class="path-row">
+        <input id="jobform-source" class="field" type="text" readonly placeholder="Choose a folder…" />
+        <button id="jobform-pick-source" class="btn btn-ghost mini-btn">Browse</button>
+      </div>
+      <label class="field-label">Destination folder (where to copy it)</label>
+      <div class="path-row">
+        <input id="jobform-dest" class="field" type="text" readonly placeholder="Choose a folder…" />
+        <button id="jobform-pick-dest" class="btn btn-ghost mini-btn">Browse</button>
+      </div>
+      <p class="modal-sub">A subfolder named after the source is created at the destination. Copies new &amp; changed files; never deletes.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="jobform-cancel">Cancel</button>
+        <button class="btn btn-primary" id="jobform-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backup run log detail -->
+  <div class="modal-backdrop hidden" id="logdetail-modal">
+    <div class="modal modal-wide">
+      <h2 id="logdetail-title">Backup run</h2>
+      <p class="modal-sub" id="logdetail-sub"></p>
+      <div id="logdetail-files" class="logdetail-files"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="logdetail-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backup modal -->
+  <div class="modal-backdrop hidden" id="backup-modal">
+    <div class="modal modal-wide">
+      <h2 id="backup-title">Back up drive</h2>
+      <p class="modal-sub" id="backup-sub"></p>
+      <label class="field-label" for="backup-dest">Back up to</label>
+      <select id="backup-dest" class="field"></select>
+      <label class="field-label">Folders to back up</label>
+      <div id="backup-folders" class="backup-folders"></div>
+      <div id="backup-progress" class="backup-progress hidden">
+        <div class="backup-bar"><div class="backup-bar-fill"></div></div>
+        <div id="backup-stats" class="backup-stats"></div>
+        <div id="backup-current" class="backup-current"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="backup-cancel">Cancel</button>
+        <button class="btn btn-primary" id="backup-start">Start backup</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drive icon picker -->
+  <div class="modal-backdrop hidden" id="icon-modal">
+    <div class="modal">
+      <h2 id="icon-modal-title">Drive icon</h2>
+      <div id="icon-grid" class="icon-grid"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="icon-clear">Use default</button>
+        <button class="btn btn-ghost" id="icon-cancel">Cancel</button>
       </div>
     </div>
   </div>

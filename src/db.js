@@ -5,7 +5,7 @@ const Database = require('better-sqlite3');
 let db = null;
 
 // Bump this whenever the schema changes and add a matching migration step.
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
 
 function init(dbPath) {
   db = new Database(dbPath);
@@ -77,6 +77,18 @@ function runMigrations() {
     backfillTreeSizes();
     v = 4;
   }
+  if (v < 5) {
+    // v5: optional per-drive avatar (an emoji), shown on the rail card.
+    const cols = db.prepare(`PRAGMA table_info(volumes)`).all();
+    if (!cols.some(c => c.name === 'icon')) db.exec(`ALTER TABLE volumes ADD COLUMN icon TEXT`);
+    v = 5;
+  }
+  if (v < 6) {
+    // v6: optional per-file flag (a star/heart/… emoji) shown beside the row.
+    const cols = db.prepare(`PRAGMA table_info(entries)`).all();
+    if (!cols.some(c => c.name === 'flag')) db.exec(`ALTER TABLE entries ADD COLUMN flag TEXT`);
+    v = 6;
+  }
 
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
@@ -109,7 +121,7 @@ function close() {
 
 function listVolumes() {
   return db.prepare(`
-    SELECT id, name, root_path, scanned_at, file_count, total_bytes
+    SELECT id, name, root_path, scanned_at, file_count, total_bytes, icon
     FROM volumes
     ORDER BY name COLLATE NOCASE
   `).all();
@@ -127,6 +139,10 @@ function renameVolume(volumeId, name) {
   db.prepare(`UPDATE volumes SET name = ? WHERE id = ?`).run(name, volumeId);
 }
 
+function setVolumeIcon(volumeId, icon) {
+  db.prepare(`UPDATE volumes SET icon = ? WHERE id = ?`).run(icon || null, volumeId);
+}
+
 // Replace a volume's catalog in one atomic transaction.
 const replaceVolume = (() => {
   const insertVolume = () => db.prepare(`
@@ -140,22 +156,27 @@ const replaceVolume = (() => {
 
   return function (existingVolumeId, meta, rows) {
     const tx = db.transaction(() => {
-      // Preserve existing notes/aliases/tags keyed by rel_path if re-scanning.
-      let preserved = new Map();
+      let volumeId = existingVolumeId;
+      // Previous scan keyed by rel_path: keeps notes/aliases/tags AND lets the
+      // caller remap the (entry-id-keyed) thumbnail cache to the new ids.
+      const oldByPath = new Map();
       if (existingVolumeId) {
-        const old = db.prepare(
-          `SELECT rel_path, note, alias, tags FROM entries WHERE volume_id = ? AND (note IS NOT NULL OR alias IS NOT NULL OR tags IS NOT NULL)`
-        ).all(existingVolumeId);
-        for (const r of old) preserved.set(r.rel_path, r);
-        db.prepare(`DELETE FROM volumes WHERE id = ?`).run(existingVolumeId);
+        const old = db.prepare(`SELECT id, rel_path, note, alias, tags, size, mtime FROM entries WHERE volume_id = ?`)
+          .all(existingVolumeId);
+        for (const r of old) oldByPath.set(r.rel_path, r);
+        db.prepare(`DELETE FROM entries WHERE volume_id = ?`).run(existingVolumeId);
+        // Keep the SAME volume row — a stable id preserves the thumbnail cache
+        // dir, the drive icon, and any per-drive settings keyed by id.
+        db.prepare(`UPDATE volumes SET name = @name, root_path = @root_path, scanned_at = @scanned_at WHERE id = @id`)
+          .run({ name: meta.name, root_path: meta.root_path, scanned_at: meta.scanned_at, id: existingVolumeId });
+      } else {
+        volumeId = insertVolume().run(meta).lastInsertRowid;
       }
-
-      const vInfo = insertVolume().run(meta);
-      const volumeId = vInfo.lastInsertRowid;
 
       const stmt = insertEntry();
       const updateAnnotations = db.prepare(`UPDATE entries SET note = ?, alias = ?, tags = ? WHERE id = ?`);
       const tempToReal = new Map();
+      const idRemap = {};                 // old entry id -> new entry id (same rel_path)
       let totalBytes = 0;
       let fileCount = 0;
 
@@ -171,11 +192,21 @@ const replaceVolume = (() => {
           mtime: r.mtime,
           ext: r.ext
         });
-        tempToReal.set(r.tempId, info.lastInsertRowid);
+        const newId = info.lastInsertRowid;
+        tempToReal.set(r.tempId, newId);
         if (!r.isDir) { totalBytes += r.size; fileCount += 1; }
 
-        const keep = preserved.get(r.relPath);
-        if (keep) updateAnnotations.run(keep.note, keep.alias, keep.tags, info.lastInsertRowid);
+        const keep = oldByPath.get(r.relPath);
+        if (keep) {
+          if (keep.note != null || keep.alias != null || keep.tags != null) {
+            updateAnnotations.run(keep.note, keep.alias, keep.tags, newId);
+          }
+          // Carry the cached thumbnail over only when the file is unchanged.
+          // If it changed (same path, different size/mtime) leave it out, so the
+          // stale thumb is dropped and a fresh one is generated. Most files are
+          // unchanged between scans, so this keeps nearly all thumbnails.
+          if (keep.size === r.size && keep.mtime === r.mtime) idRemap[keep.id] = newId;
+        }
       }
 
       db.prepare(`UPDATE volumes SET file_count = ?, total_bytes = ? WHERE id = ?`)
@@ -193,7 +224,7 @@ const replaceVolume = (() => {
       const updTree = db.prepare(`UPDATE entries SET tree_size = ? WHERE id = ?`);
       for (const r of rows) updTree.run(subtree.get(r.tempId) || 0, tempToReal.get(r.tempId));
 
-      return volumeId;
+      return { volumeId, idRemap };
     });
     return tx();
   };
@@ -203,7 +234,7 @@ const replaceVolume = (() => {
 
 function getChildren(volumeId, parentId) {
   return db.prepare(`
-    SELECT id, name, rel_path, is_dir, size, tree_size, mtime, ext, note, alias, tags
+    SELECT id, name, rel_path, is_dir, size, tree_size, mtime, ext, note, alias, tags, flag
     FROM entries
     WHERE volume_id = ? AND parent_id IS ?
     ORDER BY is_dir DESC, name COLLATE NOCASE
@@ -239,10 +270,26 @@ function getMediaEntries(volumeId, exts) {
 // done client-side; capped so a huge catalog can't overwhelm the renderer.
 function listFiles(volumeId) {
   return db.prepare(`
-    SELECT id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags
+    SELECT id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, flag
     FROM entries WHERE volume_id = ? AND is_dir = 0
     LIMIT 20000
   `).all(volumeId);
+}
+
+// Every file (recursively) under a folder — for List/Gallery views that keep
+// the same folder context when you switch views. parentId null = whole drive.
+function listFilesUnder(volumeId, parentId) {
+  return db.prepare(`
+    WITH RECURSIVE descend(id) AS (
+      SELECT id FROM entries WHERE volume_id = @v AND parent_id IS @p
+      UNION ALL
+      SELECT e.id FROM entries e JOIN descend d ON e.parent_id = d.id
+    )
+    SELECT e.id, e.parent_id, e.name, e.rel_path, e.is_dir, e.size, e.mtime, e.ext, e.note, e.alias, e.tags, e.flag
+    FROM entries e JOIN descend ON e.id = descend.id
+    WHERE e.is_dir = 0
+    LIMIT 20000
+  `).all({ v: volumeId, p: parentId ?? null });
 }
 
 // The folder chain from the volume root down to (and including) this entry,
@@ -270,7 +317,7 @@ function getLargeFiles(volumeId, opts = {}) {
   if (opts.after)   { where.push('mtime >= ?'); params.push(opts.after); }
   if (opts.before)  { where.push('mtime <= ?'); params.push(opts.before); }
   return db.prepare(`
-    SELECT id, name, rel_path, size, mtime, ext, note, alias, tags
+    SELECT id, name, rel_path, size, mtime, ext, note, alias, tags, flag
     FROM entries
     WHERE ${where.join(' AND ')}
     ORDER BY size DESC
@@ -291,11 +338,11 @@ function countMediaEntries(volumeId, exts) {
 
 function exportVolume(volumeId) {
   const volume = db.prepare(
-    `SELECT name, root_path, scanned_at, file_count, total_bytes FROM volumes WHERE id = ?`
+    `SELECT name, root_path, scanned_at, file_count, total_bytes, icon FROM volumes WHERE id = ?`
   ).get(volumeId);
   if (!volume) return null;
   const entries = db.prepare(
-    `SELECT id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, tree_size
+    `SELECT id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, tree_size, flag
      FROM entries WHERE volume_id = ? ORDER BY id`
   ).all(volumeId);
   return { format: 'diskcorder-volume', version: 1, exported_at: new Date().toISOString(), volume, entries };
@@ -308,19 +355,20 @@ function importVolume(data) {
   const v = data.volume || {};
   const tx = db.transaction(() => {
     const info = db.prepare(`
-      INSERT INTO volumes (name, root_path, scanned_at, file_count, total_bytes)
-      VALUES (@name, @root_path, @scanned_at, @file_count, @total_bytes)
+      INSERT INTO volumes (name, root_path, scanned_at, file_count, total_bytes, icon)
+      VALUES (@name, @root_path, @scanned_at, @file_count, @total_bytes, @icon)
     `).run({
       name: String(v.name || 'Imported drive'),
       root_path: v.root_path || null,
       scanned_at: v.scanned_at || new Date().toISOString(),
       file_count: v.file_count || 0,
-      total_bytes: v.total_bytes || 0
+      total_bytes: v.total_bytes || 0,
+      icon: v.icon || null
     });
     const volumeId = info.lastInsertRowid;
     const ins = db.prepare(`
-      INSERT INTO entries (volume_id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, tree_size)
-      VALUES (@volume_id, @parent_id, @name, @rel_path, @is_dir, @size, @mtime, @ext, @note, @alias, @tags, @tree_size)
+      INSERT INTO entries (volume_id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags, tree_size, flag)
+      VALUES (@volume_id, @parent_id, @name, @rel_path, @is_dir, @size, @mtime, @ext, @note, @alias, @tags, @tree_size, @flag)
     `);
     const vocab = db.prepare(`INSERT INTO tag_vocab (name, last_used) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET last_used = excluded.last_used`);
     const now = new Date().toISOString();
@@ -334,7 +382,7 @@ function importVolume(data) {
         name: String(e.name || ''), rel_path: String(e.rel_path || ''),
         is_dir: e.is_dir ? 1 : 0, size: e.size || 0, mtime: e.mtime || null,
         ext: e.ext || null, note: e.note || null, alias: e.alias || null,
-        tags: e.tags || null, tree_size: e.tree_size || 0
+        tags: e.tags || null, tree_size: e.tree_size || 0, flag: e.flag || null
       });
       idMap.set(e.id, r.lastInsertRowid);
       if (e.tags) { try { for (const t of JSON.parse(e.tags)) vocab.run(t, now); } catch { /* ignore bad tags */ } }
@@ -376,6 +424,10 @@ function setNote(id, note) {
 
 function setAlias(id, alias) {
   db.prepare(`UPDATE entries SET alias = ? WHERE id = ?`).run(alias || null, id);
+}
+
+function setFlag(id, flag) {
+  db.prepare(`UPDATE entries SET flag = ? WHERE id = ?`).run(flag || null, id);
 }
 
 function applyRealRename(id, newName, newRelPath) {
@@ -446,7 +498,7 @@ function search(term, volumeId) {
   const volClause = volumeId ? `AND e.volume_id = ?` : ``;
   const params = volumeId ? [like, like, like, like, volumeId] : [like, like, like, like];
   return db.prepare(`
-    SELECT e.id, e.name, e.rel_path, e.is_dir, e.size, e.ext, e.note, e.alias, e.tags,
+    SELECT e.id, e.name, e.rel_path, e.is_dir, e.size, e.ext, e.note, e.alias, e.tags, e.flag,
            e.volume_id, e.parent_id, v.name AS volume_name
     FROM entries e
     JOIN volumes v ON v.id = e.volume_id
@@ -459,9 +511,9 @@ function search(term, volumeId) {
 
 module.exports = {
   init, close,
-  listVolumes, getVolume, deleteVolume, renameVolume, replaceVolume,
-  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, getAncestry, findDuplicates,
+  listVolumes, getVolume, deleteVolume, renameVolume, setVolumeIcon, replaceVolume,
+  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, listFilesUnder, getAncestry, findDuplicates,
   exportVolume, importVolume,
-  setNote, setAlias, setTags, listTags,
+  setNote, setAlias, setFlag, setTags, listTags,
   applyRealRename, applyFolderRename, deleteEntrySubtree, search
 };

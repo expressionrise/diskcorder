@@ -8,6 +8,7 @@ const db = require('./db');
 const scanner = require('./scanner');
 const thumbs = require('./thumbs');
 const transfer = require('./transfer');
+const backup = require('./backup');
 
 let win = null;
 
@@ -110,6 +111,10 @@ ipcMain.handle('volumes:delete', async (_e, id) => {
 });
 ipcMain.handle('volumes:rename', (_e, id, name) => {
   db.renameVolume(assertInt(id), assertStr(name, 'name', 200));
+  return true;
+});
+ipcMain.handle('volumes:setIcon', (_e, id, icon) => {
+  db.setVolumeIcon(assertInt(id), icon == null ? null : assertStr(icon, 'icon', 16));
   return true;
 });
 ipcMain.handle('volumes:reachable', (_e, id) => {
@@ -216,9 +221,10 @@ ipcMain.handle('drive:scan', async (_e, { root, name, existingVolumeId }) => {
       scanned_at: new Date().toISOString(),
       file_count: 0, total_bytes: 0
     };
-    // A re-scan invalidates the old volume id's thumb cache.
-    if (existingVolumeId) await thumbs.clearVolume(existingVolumeId);
-    const volumeId = db.replaceVolume(existingVolumeId || null, meta, entries);
+    const { volumeId, idRemap } = db.replaceVolume(existingVolumeId || null, meta, entries);
+    // Keep cached thumbnails across a re-scan/sync: remap them from the old
+    // entry ids to the new ones (matched by path) instead of discarding them.
+    if (existingVolumeId) await thumbs.remapCache(volumeId, idRemap);
     return { ok: true, volumeId, skipped };
   } catch (err) {
     if (err && err.code === 'SCAN_ABORTED') return { ok: false, canceled: true };
@@ -245,9 +251,15 @@ ipcMain.handle('entries:setAlias', (_e, id, alias) => {
   db.setAlias(assertInt(id), alias == null ? null : assertStr(alias, 'alias', 500));
   return true;
 });
+ipcMain.handle('entries:setFlag', (_e, id, flag) => {
+  db.setFlag(assertInt(id), flag == null ? null : assertStr(flag, 'flag', 16));
+  return true;
+});
 ipcMain.handle('entries:search', (_e, term, volumeId) =>
   db.search(assertStr(term, 'term', 200), volumeId == null ? null : assertInt(volumeId, 'volumeId')));
 ipcMain.handle('entries:list', (_e, volumeId) => db.listFiles(assertInt(volumeId)));
+ipcMain.handle('entries:listUnder', (_e, volumeId, parentId) =>
+  db.listFilesUnder(assertInt(volumeId), parentId == null ? null : assertInt(parentId, 'parentId')));
 ipcMain.handle('entries:ancestry', (_e, id) => db.getAncestry(assertInt(id)));
 ipcMain.handle('entries:large', (_e, volumeId, opts) => {
   assertInt(volumeId);
@@ -617,4 +629,154 @@ ipcMain.handle('transfer:cancel', (_e, opId) => {
   const ac = transferOps.get(opId);
   if (ac) ac.abort();
   return true;
+});
+
+// ---- IPC: additive backup between two connected drives -------------------
+
+let backupAbort = null;
+
+ipcMain.handle('backup:cancel', () => { if (backupAbort) backupAbort.abort(); return true; });
+
+ipcMain.handle('backup:start', async (_e, { srcVolumeId, destVolumeId, items }) => {
+  assertInt(srcVolumeId);
+  assertInt(destVolumeId);
+  if (srcVolumeId === destVolumeId) return { ok: false, error: 'Pick a different drive to back up to.' };
+  const src = db.getVolume(srcVolumeId);
+  const dest = db.getVolume(destVolumeId);
+  if (!src || !src.root_path || !fs.existsSync(src.root_path)) return { ok: false, error: 'Source drive is not connected.' };
+  if (!dest || !dest.root_path || !fs.existsSync(dest.root_path)) return { ok: false, error: 'Destination drive is not connected.' };
+
+  const rels = (Array.isArray(items) ? items : [])
+    .map(s => assertStr(s, 'item', 4096))
+    .filter(s => !path.isAbsolute(s) && !s.split(/[\\/]/).includes('..'));   // stay inside the drive
+
+  // Back up into a folder named after the source drive, so multiple drives
+  // can share one destination without colliding.
+  const safeName = (src.name || 'Backup').replace(/[\\/:*?"<>|]/g, '_');
+  const destBase = path.join(dest.root_path, safeName);
+
+  backupAbort = new AbortController();
+  let last = 0;
+  const emit = (s, finished = false) => send('backup:progress', {
+    copied: s.copied, skipped: s.skipped, errors: s.errors,
+    copiedBytes: s.copiedBytes, skippedBytes: s.skippedBytes,
+    current: s.current, finished
+  });
+  try {
+    const stats = await backup.runBackup({
+      srcBase: src.root_path, destBase, items: rels,
+      signal: backupAbort.signal,
+      onProgress: (s) => { const now = Date.now(); if (now - last > 120) { last = now; emit(s); } }
+    });
+    emit(stats, true);
+    return { ok: true, ...stats, canceled: backupAbort.signal.aborted, destBase };
+  } catch (err) {
+    if (backupAbort && backupAbort.signal.aborted) return { ok: true, canceled: true };
+    return { ok: false, error: err.message };
+  } finally {
+    backupAbort = null;
+  }
+});
+
+// ---- IPC: backup tab — saved actions, any-folder runs, and run logs -------
+
+const jobsFile = () => path.join(app.getPath('userData'), 'backup-jobs.json');
+const logsDir  = () => path.join(app.getPath('userData'), 'backup-logs');
+const logIndexFile = () => path.join(logsDir(), 'index.json');
+
+async function readJson(file, fallback) {
+  try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return fallback; }
+}
+
+ipcMain.handle('backup:pickFolder', async (_e, title) => {
+  const res = await dialog.showOpenDialog(win, {
+    title: title || 'Choose a folder',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  return (res.canceled || !res.filePaths.length) ? null : res.filePaths[0];
+});
+
+ipcMain.handle('backup:listJobs', () => readJson(jobsFile(), []));
+
+ipcMain.handle('backup:saveJob', async (_e, job) => {
+  const jobs = await readJson(jobsFile(), []);
+  const j = {
+    id: job.id || `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: assertStr(job.name || 'Backup', 'name', 200),
+    source: assertStr(job.source, 'source', 4096),
+    dest: assertStr(job.dest, 'dest', 4096),
+    lastRun: job.lastRun || null
+  };
+  const i = jobs.findIndex(x => x.id === j.id);
+  if (i >= 0) jobs[i] = { ...jobs[i], ...j }; else jobs.push(j);
+  await fsp.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8');
+  return j;
+});
+
+ipcMain.handle('backup:deleteJob', async (_e, id) => {
+  const jobs = (await readJson(jobsFile(), [])).filter(x => x.id !== id);
+  await fsp.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8');
+  return true;
+});
+
+ipcMain.handle('backup:logIndex', () => readJson(logIndexFile(), []));
+ipcMain.handle('backup:logDetail', (_e, runId) => {
+  assertStr(runId, 'runId', 80);
+  if (!/^[\w-]+$/.test(runId)) return null;          // guard against path tricks
+  return readJson(path.join(logsDir(), `${runId}.json`), null);
+});
+
+// Run a backup of an arbitrary source folder into an arbitrary destination
+// folder (created under a subfolder named after the source). Writes a log.
+ipcMain.handle('backup:runPath', async (_e, { source, dest, name, jobId }) => {
+  assertStr(source, 'source', 4096);
+  assertStr(dest, 'dest', 4096);
+  if (!fs.existsSync(source)) return { ok: false, error: 'Source folder is not reachable.' };
+  if (!fs.existsSync(dest)) return { ok: false, error: 'Destination folder is not reachable.' };
+  const srcBase = path.resolve(source);
+  const destBase = path.join(path.resolve(dest), path.basename(srcBase) || 'Backup');
+  if (path.resolve(destBase).startsWith(srcBase + path.sep)) {
+    return { ok: false, error: 'Destination is inside the source folder.' };
+  }
+
+  backupAbort = new AbortController();
+  let last = 0;
+  const emit = (s, finished = false) => send('backup:progress', {
+    copied: s.copied, skipped: s.skipped, errors: s.errors,
+    copiedBytes: s.copiedBytes, current: s.current, finished, jobId
+  });
+  const when = new Date().toISOString();
+  try {
+    const stats = await backup.runBackup({
+      srcBase, destBase, items: [''], signal: backupAbort.signal,
+      onProgress: (s) => { const now = Date.now(); if (now - last > 120) { last = now; emit(s); } }
+    });
+    emit(stats, true);
+    const canceled = backupAbort.signal.aborted;
+
+    // write the run log
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    await fsp.mkdir(logsDir(), { recursive: true }).catch(() => {});
+    const summary = {
+      runId, name: name || path.basename(srcBase), jobId: jobId || null,
+      source: srcBase, dest: destBase, when, canceled,
+      copied: stats.copied, skipped: stats.skipped, errors: stats.errors, copiedBytes: stats.copiedBytes
+    };
+    await fsp.writeFile(path.join(logsDir(), `${runId}.json`), JSON.stringify({ ...summary, files: stats.files }, null, 2), 'utf8');
+    const index = await readJson(logIndexFile(), []);
+    index.unshift(summary);
+    await fsp.writeFile(logIndexFile(), JSON.stringify(index.slice(0, 200), null, 2), 'utf8');
+
+    if (jobId) {
+      const jobs = await readJson(jobsFile(), []);
+      const j = jobs.find(x => x.id === jobId);
+      if (j) { j.lastRun = summary; await fsp.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8'); }
+    }
+    return { ok: true, ...summary };
+  } catch (err) {
+    if (backupAbort && backupAbort.signal.aborted) return { ok: true, canceled: true };
+    return { ok: false, error: err.message };
+  } finally {
+    backupAbort = null;
+  }
 });

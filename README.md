@@ -99,6 +99,27 @@ npm start
 - **ffmpeg is optional at runtime.** If no ffmpeg is found, the app still runs —
   video preview generation is simply disabled.
 
+### Run it locally
+
+Once the dependencies are installed, run the app straight from source:
+
+```bash
+git clone https://github.com/expressionrise/diskcorder.git
+cd diskcorder
+npm install   # one time — see gotchas above if you're behind a proxy / on Node < 22.12
+npm start     # launches the Electron app
+```
+
+`npm start` is just `electron .` — it loads `src/main.js` directly, with no build
+or bundling step. **This is the recommended way to run Diskcorder locally**: the
+install-time gotchas above (the `NODE_EXTRA_CA_CERTS` proxy bundle and the
+`NODE_OPTIONS=--experimental-require-module` flag) only apply to `npm install`, so
+once the install succeeds the app starts cleanly with no extra environment
+variables and no system warnings.
+
+To iterate on the code, just edit files under `src/` and restart `npm start`
+(quit the window and run it again) to pick up the changes.
+
 ### Building a Windows installer
 
 ```bash

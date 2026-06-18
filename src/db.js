@@ -235,6 +235,44 @@ function getMediaEntries(volumeId, exts) {
   `).all(volumeId, ...exts);
 }
 
+// Every file (no folders) on a volume — for the flat "List" view. Sorting is
+// done client-side; capped so a huge catalog can't overwhelm the renderer.
+function listFiles(volumeId) {
+  return db.prepare(`
+    SELECT id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags
+    FROM entries WHERE volume_id = ? AND is_dir = 0
+    LIMIT 20000
+  `).all(volumeId);
+}
+
+// Largest files on a volume, with optional size/date filters. mtime is stored
+// as an ISO string, so lexicographic >=/<= bounds work as date filters.
+function getLargeFiles(volumeId, opts = {}) {
+  const limit = Math.min(2000, Math.max(1, opts.limit || 100));
+  const where = ['volume_id = ?', 'is_dir = 0'];
+  const params = [volumeId];
+  if (opts.minSize) { where.push('size >= ?'); params.push(opts.minSize); }
+  if (opts.maxSize) { where.push('size <= ?'); params.push(opts.maxSize); }
+  if (opts.after)   { where.push('mtime >= ?'); params.push(opts.after); }
+  if (opts.before)  { where.push('mtime <= ?'); params.push(opts.before); }
+  return db.prepare(`
+    SELECT id, name, rel_path, size, mtime, ext, note, alias, tags
+    FROM entries
+    WHERE ${where.join(' AND ')}
+    ORDER BY size DESC
+    LIMIT ?
+  `).all(...params, limit);
+}
+
+// Count of media entries for a volume, for thumbnail-coverage reporting.
+function countMediaEntries(volumeId, exts) {
+  const placeholders = exts.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT COUNT(*) AS n FROM entries
+    WHERE volume_id = ? AND is_dir = 0 AND ext IN (${placeholders})
+  `).get(volumeId, ...exts).n;
+}
+
 // ---- Export / import a volume catalog (JSON) -----------------------------
 
 function exportVolume(volumeId) {
@@ -287,7 +325,9 @@ function importVolume(data) {
       idMap.set(e.id, r.lastInsertRowid);
       if (e.tags) { try { for (const t of JSON.parse(e.tags)) vocab.run(t, now); } catch { /* ignore bad tags */ } }
     }
-    return volumeId;
+    // Return the id remap too, so cached thumbnails carried in the export can
+    // be rewritten to the new entry ids by the caller.
+    return { volumeId, idMap: Object.fromEntries(idMap) };
   });
   return tx();
 }
@@ -362,7 +402,7 @@ function findDuplicates(volumeId) {
       WHERE is_dir = 0 AND size > 0 ${scope}
       GROUP BY name, size HAVING COUNT(*) > 1
     )
-    SELECT e.id, e.name, e.size, e.ext, e.volume_id, e.rel_path, v.name AS volume_name
+    SELECT e.id, e.name, e.size, e.ext, e.mtime, e.volume_id, e.rel_path, v.name AS volume_name
     FROM entries e
     JOIN dups d ON d.name = e.name AND d.size = e.size
     JOIN volumes v ON v.id = e.volume_id
@@ -406,7 +446,7 @@ function search(term, volumeId) {
 module.exports = {
   init, close,
   listVolumes, getVolume, deleteVolume, renameVolume, replaceVolume,
-  getChildren, getTreemap, getEntry, getMediaEntries, findDuplicates,
+  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, findDuplicates,
   exportVolume, importVolume,
   setNote, setAlias, setTags, listTags,
   applyRealRename, applyFolderRename, deleteEntrySubtree, search

@@ -117,10 +117,29 @@ ipcMain.handle('volumes:reachable', (_e, id) => {
   return !!(vol && vol.root_path && fs.existsSync(vol.root_path));
 });
 
+// Real filesystem capacity for the drive holding this volume's root, so the
+// rail can show used / total disk space (not just the cataloged bytes).
+// Returns null when the drive is offline or statfs is unsupported.
+ipcMain.handle('volumes:capacity', async (_e, id) => {
+  const vol = db.getVolume(assertInt(id));
+  if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) return null;
+  try {
+    const s = await fsp.statfs(vol.root_path);
+    const total = s.blocks * s.bsize;
+    const free  = s.bavail * s.bsize;
+    if (!total) return null;
+    return { total, free, used: Math.max(0, total - free) };
+  } catch {
+    return null;
+  }
+});
+
 ipcMain.handle('volumes:export', async (_e, id) => {
   assertInt(id);
   const data = db.exportVolume(id);
   if (!data) return { ok: false, error: 'Drive not found.' };
+  // Bundle the cached stills so the catalog stays useful on another machine.
+  data.thumbs = await thumbs.exportThumbs(id);
   const safe = (data.volume.name || 'drive').replace(/[\\/:*?"<>|]/g, '_');
   const res = await dialog.showSaveDialog(win, {
     title: 'Export drive catalog',
@@ -129,7 +148,7 @@ ipcMain.handle('volumes:export', async (_e, id) => {
   });
   if (res.canceled || !res.filePath) return { ok: false, canceled: true };
   await fsp.writeFile(res.filePath, JSON.stringify(data), 'utf8');
-  return { ok: true, path: res.filePath, count: data.entries.length };
+  return { ok: true, path: res.filePath, count: data.entries.length, thumbs: Object.keys(data.thumbs).length };
 });
 
 ipcMain.handle('volumes:import', async () => {
@@ -142,8 +161,11 @@ ipcMain.handle('volumes:import', async () => {
   let data;
   try { data = JSON.parse(await fsp.readFile(res.filePaths[0], 'utf8')); }
   catch (e) { return { ok: false, error: 'Could not read that file: ' + e.message }; }
-  try { return { ok: true, volumeId: db.importVolume(data) }; }
-  catch (e) { return { ok: false, error: e.message }; }
+  try {
+    const { volumeId, idMap } = db.importVolume(data);
+    const thumbsRestored = await thumbs.importThumbs(volumeId, data.thumbs, idMap);
+    return { ok: true, volumeId, thumbs: thumbsRestored };
+  } catch (e) { return { ok: false, error: e.message }; }
 });
 
 ipcMain.handle('drive:pick', async () => {
@@ -225,6 +247,92 @@ ipcMain.handle('entries:setAlias', (_e, id, alias) => {
 });
 ipcMain.handle('entries:search', (_e, term, volumeId) =>
   db.search(assertStr(term, 'term', 200), volumeId == null ? null : assertInt(volumeId, 'volumeId')));
+ipcMain.handle('entries:list', (_e, volumeId) => db.listFiles(assertInt(volumeId)));
+ipcMain.handle('entries:large', (_e, volumeId, opts) => {
+  assertInt(volumeId);
+  const o = opts || {};
+  return db.getLargeFiles(volumeId, {
+    limit: o.limit ? assertInt(o.limit, 'limit') : 100,
+    minSize: o.minSize ? assertInt(o.minSize, 'minSize') : 0,
+    maxSize: o.maxSize ? assertInt(o.maxSize, 'maxSize') : 0,
+    after: o.after ? assertStr(o.after, 'after', 40) : null,
+    before: o.before ? assertStr(o.before, 'before', 40) : null
+  });
+});
+
+// ---- IPC: integrity test (is the real file readable / not corrupt?) ------
+
+// Stream the whole file to catch read errors / bad sectors. Abortable.
+function readTest(srcPath, signal) {
+  return new Promise((resolve) => {
+    const rs = fs.createReadStream(srcPath);
+    let bytes = 0;
+    const onAbort = () => rs.destroy(new Error('aborted'));
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    rs.on('data', c => { bytes += c.length; });
+    rs.on('error', (e) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve({ ok: false, bytes, error: e.message, aborted: !!(signal && signal.aborted) });
+    });
+    rs.on('end', () => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve({ ok: true, bytes });
+    });
+  });
+}
+
+let fileTestAbort = null;
+ipcMain.handle('file:test:cancel', () => { if (fileTestAbort) fileTestAbort.abort(); return true; });
+
+ipcMain.handle('file:test', async (_e, id) => {
+  assertInt(id);
+  const entry = db.getEntry(id);
+  if (!entry || entry.is_dir) return { ok: false, status: 'error', detail: 'Not a file.' };
+  const vol = db.getVolume(entry.volume_id);
+  if (!vol || !vol.root_path) return { ok: false, status: 'offline' };
+  const src = path.join(vol.root_path, entry.rel_path);
+
+  let st;
+  try { st = await fsp.stat(src); }
+  catch { return { ok: false, status: 'missing' }; }
+
+  const sizeOnDisk = st.size;
+  const expectedSize = entry.size || 0;
+  const sizeMismatch = !!expectedSize && sizeOnDisk !== expectedSize;
+
+  fileTestAbort = new AbortController();
+  const signal = fileTestAbort.signal;
+  const kind = kindOf(entry.ext);
+  let result;
+  try {
+    if ((kind === 'video' || kind === 'image') && await thumbs.ffmpegAvailable()) {
+      const r = await thumbs.checkMedia(src, signal);
+      if (r.aborted) return { status: 'canceled' };
+      result = {
+        ok: r.ok, method: 'ffmpeg', status: r.ok ? 'ok' : 'damaged',
+        ffmpegErrors: (r.errors || '').split('\n').slice(0, 12).join('\n')
+      };
+    } else {
+      const r = await readTest(src, signal);
+      if (r.aborted) return { status: 'canceled' };
+      result = {
+        ok: r.ok, method: 'read', status: r.ok ? 'ok' : 'unreadable',
+        bytesRead: r.bytes, readError: r.error || null
+      };
+    }
+  } finally {
+    fileTestAbort = null;
+  }
+
+  result.sizeOnDisk = sizeOnDisk;
+  result.expectedSize = expectedSize;
+  if (sizeMismatch) {
+    result.ok = false;
+    result.sizeMismatch = true;
+    if (result.status === 'ok') result.status = 'size-mismatch';
+  }
+  return result;
+});
 
 // ---- IPC: real on-disk rename (drive must be connected) ------------------
 
@@ -355,6 +463,15 @@ ipcMain.handle('thumbs:ensure', async (_e, id) => {
 
 ipcMain.handle('thumbs:ready', () => thumbs.ffmpegAvailable());
 
+// Thumbnail coverage for a volume: how many of its media files already have a
+// cached still, out of the total. Works offline (reads the cache, not the drive).
+ipcMain.handle('thumbs:coverage', (_e, volumeId) => {
+  assertInt(volumeId);
+  const total = db.countMediaEntries(volumeId, thumbs.MEDIA_EXTS);
+  const made = Math.min(thumbs.countThumbs(volumeId), total);
+  return { made, total };
+});
+
 // Batch-generate for every reachable media file in a volume (concurrency
 // limited). `previews` also builds the 10s hover clips for videos (slower).
 ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
@@ -367,11 +484,28 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   const media = db.getMediaEntries(volumeId, thumbs.MEDIA_EXTS);
   if (!media.length) return { ok: true, total: 0 };
 
+  // Only queue files that still need work, so a re-run resumes where it left
+  // off instead of re-walking the whole catalog and "starting over". Anything
+  // already cached is skipped here and never counted toward the total.
+  const pending = [];
+  for (const m of media) {
+    const kind = kindOf(m.ext);
+    if (!kind) continue;
+    const needThumb = !(await thumbs.hasThumb(volumeId, m.id));
+    const needPrev  = previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id));
+    if (needThumb || needPrev) pending.push(m);
+  }
+  if (!pending.length) {
+    send('thumbs:progress', { done: 0, total: 0, current: '', volumeId, finished: true });
+    return { ok: true, total: 0, done: 0 };
+  }
+
   thumbAbort = new AbortController();
   thumbGate = makePauseGate();
   const signal = thumbAbort.signal;
-  const total = media.length;
+  const total = pending.length;
   let done = 0;
+  send('thumbs:progress', { done, total, current: '', volumeId });
 
   const worker = async (queue) => {
     while (queue.length && !signal.aborted) {
@@ -394,7 +528,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
     }
   };
 
-  const queue = media.slice();
+  const queue = pending.slice();
   await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
   send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
   thumbAbort = null;

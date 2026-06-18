@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteVolume: (id) => ipcRenderer.invoke('volumes:delete', id),
   renameVolume: (id, name) => ipcRenderer.invoke('volumes:rename', id, name),
   isReachable: (id) => ipcRenderer.invoke('volumes:reachable', id),
+  driveCapacity: (id) => ipcRenderer.invoke('volumes:capacity', id),
   exportVolume: (id) => ipcRenderer.invoke('volumes:export', id),
   importVolume: () => ipcRenderer.invoke('volumes:import'),
   pickDrive: () => ipcRenderer.invoke('drive:pick'),
@@ -31,8 +32,12 @@ contextBridge.exposeInMainWorld('api', {
   setTags: (id, tags) => ipcRenderer.invoke('entries:setTags', id, tags),
   listTags: () => ipcRenderer.invoke('tags:list'),
   search: (term, volumeId) => ipcRenderer.invoke('entries:search', term, volumeId),
+  largeFiles: (volumeId, opts) => ipcRenderer.invoke('entries:large', volumeId, opts),
+  listFiles: (volumeId) => ipcRenderer.invoke('entries:list', volumeId),
   realRename: (id, newName) => ipcRenderer.invoke('entries:realRename', id, newName),
   realDelete: (id) => ipcRenderer.invoke('entries:realDelete', id),
+  testFile: (id) => ipcRenderer.invoke('file:test', id),
+  cancelFileTest: () => ipcRenderer.invoke('file:test:cancel'),
   findDuplicates: (volumeId) => ipcRenderer.invoke('entries:duplicates', volumeId),
   revealInExplorer: (id) => ipcRenderer.invoke('entries:reveal', id),
 
@@ -46,6 +51,7 @@ contextBridge.exposeInMainWorld('api', {
   pauseThumbs: () => ipcRenderer.invoke('thumbs:pause'),
   resumeThumbs: () => ipcRenderer.invoke('thumbs:resume'),
   ffmpegReady: () => ipcRenderer.invoke('thumbs:ready'),
+  thumbCoverage: (volumeId) => ipcRenderer.invoke('thumbs:coverage', volumeId),
 
   // transfer (copy / move between drives)
   transferTargets: (entryId) => ipcRenderer.invoke('transfer:targets', entryId),

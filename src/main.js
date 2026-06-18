@@ -248,6 +248,7 @@ ipcMain.handle('entries:setAlias', (_e, id, alias) => {
 ipcMain.handle('entries:search', (_e, term, volumeId) =>
   db.search(assertStr(term, 'term', 200), volumeId == null ? null : assertInt(volumeId, 'volumeId')));
 ipcMain.handle('entries:list', (_e, volumeId) => db.listFiles(assertInt(volumeId)));
+ipcMain.handle('entries:ancestry', (_e, id) => db.getAncestry(assertInt(id)));
 ipcMain.handle('entries:large', (_e, volumeId, opts) => {
   assertInt(volumeId);
   const o = opts || {};
@@ -471,6 +472,9 @@ ipcMain.handle('thumbs:coverage', (_e, volumeId) => {
   const made = Math.min(thumbs.countThumbs(volumeId), total);
   return { made, total };
 });
+
+// Local disk used by a drive's cached thumbnails + previews (its catalog cost).
+ipcMain.handle('thumbs:cachesize', (_e, volumeId) => thumbs.cacheSize(assertInt(volumeId)));
 
 // Batch-generate for every reachable media file in a volume (concurrency
 // limited). `previews` also builds the 10s hover clips for videos (slower).

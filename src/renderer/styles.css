@@ -22,6 +22,40 @@
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* ----------------------------------------------------------------------
+   Color themes — same family as the other "corder" apps. Default (:root)
+   is Gold dark; these body classes re-map the tokens above.
+   ---------------------------------------------------------------------- */
+body.theme-blue {            /* GitHub dark (blue accent) */
+  --surface-2: #21262d;
+  --accent:    #2f81f7;
+  --accent-ink:#ffffff;
+  --avail:     #54aeff;
+}
+body.theme-dim {             /* GitHub dim, gold accent */
+  --bg:        #1c2128;
+  --surface:   #22272e;
+  --surface-2: #2d333b;
+  --line:      #444c56;
+  --text:      #cdd9e5;
+  --text-dim:  #adbac7;
+  --text-faint:#768390;
+  --avail:     #6cb6ff;
+}
+body.theme-light {           /* GitHub light */
+  --bg:        #f6f8fa;
+  --surface:   #ffffff;
+  --surface-2: #eef1f4;
+  --line:      #d0d7de;
+  --text:      #1f2328;
+  --text-dim:  #57606a;
+  --text-faint:#6e7781;
+  --accent:    #0969da;
+  --accent-ink:#ffffff;
+  --avail:     #0969da;
+  --danger:    #cf222e;
+}
+
 /* ---- Scrollbars (family style) --------------------------------------- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -38,7 +72,17 @@ html, body {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  transition: background .25s ease, color .25s ease;
 }
+
+/* theme picker in the top bar */
+.theme-select {
+  height: 34px; padding: 0 8px;
+  border-radius: var(--radius-sm); border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--text);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.theme-select:focus { outline: none; border-color: var(--accent); }
 
 .hidden { display: none !important; }
 
@@ -223,6 +267,60 @@ html, body {
 /* search-result rows show their drive + path */
 .row .sub { font-size: 11px; color: var(--text-faint); font-family: var(--mono);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sub.sub-link { cursor: pointer; }
+.row .sub.sub-link:hover { color: var(--accent); text-decoration: underline; }
+
+/* ---- Gallery view (large thumbnail tiles) ---------------------------- */
+.listing.gallery {
+  display: grid; gap: 12px; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+.gtile {
+  cursor: pointer; border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; background: var(--surface-2);
+}
+.gtile:hover { border-color: var(--text-faint); }
+.gtile.selected { border-color: var(--accent); }
+.gthumb {
+  position: relative; width: 100%; aspect-ratio: 16 / 10;
+  background: var(--bg); display: flex; align-items: center; justify-content: center;
+}
+/* beat the compact .ic.thumb listing-row sizing for gallery tiles */
+.gthumb.ic.thumb {
+  width: 100%; height: auto; aspect-ratio: 16 / 10;
+  border: none; border-radius: 0; margin: 0; overflow: hidden;
+}
+.gthumb:not(.thumb) svg { width: 40px; height: 40px; }
+.gcap { padding: 7px 9px; font-size: 12px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Rail folder tree (folder tiles) --------------------------------- */
+.rail-head-tree { border-top: 1px solid var(--line); margin-top: 4px; }
+.folder-tree { padding: 4px 8px 12px; }
+.tree-children { margin-top: 4px; }
+.tree-row {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 9px; margin-bottom: 4px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2); cursor: pointer;
+  white-space: nowrap; font-size: 12.5px;
+  transition: border-color .12s ease, background .12s ease;
+}
+.tree-row:hover { border-color: var(--text-faint); }
+.tree-row.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+}
+.tree-toggle {
+  width: 16px; height: 16px; flex: none; display: flex;
+  align-items: center; justify-content: center; font-size: 10px;
+  color: var(--text-faint); cursor: pointer; border-radius: 3px;
+}
+.tree-toggle:hover { background: var(--bg); color: var(--text); }
+.tree-toggle.leaf { cursor: default; opacity: .35; }
+.tree-name { overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+.tree-row:hover .tree-name, .tree-row.active .tree-name { color: var(--text); }
+.tree-empty { padding: 6px 10px; color: var(--text-faint); font-size: 12px; }
 
 /* ---- Large files view ------------------------------------------------- */
 .large-head {
@@ -238,7 +336,7 @@ html, body {
 }
 .large-controls select:focus, .large-controls input:focus { outline: none; border-color: var(--accent); }
 .large-summary { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
-.large-row { grid-template-columns: 26px 22px 1fr auto auto; }
+.large-row { grid-template-columns: 26px 40px 1fr auto auto; }
 .large-row .lg-rank { font-family: var(--mono); font-size: 11px; color: var(--text-faint); text-align: right; }
 .large-row .lg-date { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 .lg-year-head {
@@ -377,9 +475,10 @@ html, body {
   border-radius: 4px; overflow: hidden; background: var(--bg);
   border: 1px solid var(--line); flex: none;
 }
-/* widen the icon column when a thumbnail is present */
-.row { grid-template-columns: 22px 1fr auto; }
-.row .ic.thumb { margin: -2px 0; }
+/* reserve room for the 40px thumbnail so text never overlaps it */
+.row { grid-template-columns: 40px 1fr auto; }
+.row .ic { justify-self: center; }
+.row .ic.thumb { margin: -2px 0; justify-self: start; }
 .thumb-img, .thumb-vid {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: cover; display: block;

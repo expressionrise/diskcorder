@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('api', {
   search: (term, volumeId) => ipcRenderer.invoke('entries:search', term, volumeId),
   largeFiles: (volumeId, opts) => ipcRenderer.invoke('entries:large', volumeId, opts),
   listFiles: (volumeId) => ipcRenderer.invoke('entries:list', volumeId),
+  ancestry: (id) => ipcRenderer.invoke('entries:ancestry', id),
   realRename: (id, newName) => ipcRenderer.invoke('entries:realRename', id, newName),
   realDelete: (id) => ipcRenderer.invoke('entries:realDelete', id),
   testFile: (id) => ipcRenderer.invoke('file:test', id),
@@ -52,6 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   resumeThumbs: () => ipcRenderer.invoke('thumbs:resume'),
   ffmpegReady: () => ipcRenderer.invoke('thumbs:ready'),
   thumbCoverage: (volumeId) => ipcRenderer.invoke('thumbs:coverage', volumeId),
+  cacheSize: (volumeId) => ipcRenderer.invoke('thumbs:cachesize', volumeId),
 
   // transfer (copy / move between drives)
   transferTargets: (entryId) => ipcRenderer.invoke('transfer:targets', entryId),

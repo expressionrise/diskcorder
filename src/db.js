@@ -239,10 +239,24 @@ function getMediaEntries(volumeId, exts) {
 // done client-side; capped so a huge catalog can't overwhelm the renderer.
 function listFiles(volumeId) {
   return db.prepare(`
-    SELECT id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags
+    SELECT id, parent_id, name, rel_path, is_dir, size, mtime, ext, note, alias, tags
     FROM entries WHERE volume_id = ? AND is_dir = 0
     LIMIT 20000
   `).all(volumeId);
+}
+
+// The folder chain from the volume root down to (and including) this entry,
+// so the UI can rebuild a breadcrumb / navigate to any folder by id.
+function getAncestry(id) {
+  return db.prepare(`
+    WITH RECURSIVE up(id, parent_id, name, is_dir, lvl) AS (
+      SELECT id, parent_id, name, is_dir, 0 FROM entries WHERE id = ?
+      UNION ALL
+      SELECT e.id, e.parent_id, e.name, e.is_dir, up.lvl + 1
+      FROM entries e JOIN up ON e.id = up.parent_id
+    )
+    SELECT id, name, is_dir FROM up ORDER BY lvl DESC
+  `).all(id);
 }
 
 // Largest files on a volume, with optional size/date filters. mtime is stored
@@ -446,7 +460,7 @@ function search(term, volumeId) {
 module.exports = {
   init, close,
   listVolumes, getVolume, deleteVolume, renameVolume, replaceVolume,
-  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, findDuplicates,
+  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, getAncestry, findDuplicates,
   exportVolume, importVolume,
   setNote, setAlias, setTags, listTags,
   applyRealRename, applyFolderRename, deleteEntrySubtree, search

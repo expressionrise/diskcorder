@@ -194,6 +194,19 @@ function countThumbs(volumeId) {
   } catch { return 0; }
 }
 
+// Total bytes of a volume's local cache (thumbnails + preview clips) — i.e. how
+// much disk space this drive's catalog costs on the user's machine.
+async function cacheSize(volumeId) {
+  const dir = dirFor(volumeId);
+  let files;
+  try { files = await fsp.readdir(dir); } catch { return 0; }
+  let total = 0;
+  for (const f of files) {
+    try { total += (await fsp.stat(path.join(dir, f))).size; } catch { /* skip */ }
+  }
+  return total;
+}
+
 async function hasThumb(volumeId, entryId) {
   try { await fsp.access(thumbPath(volumeId, entryId)); return true; } catch { return false; }
 }
@@ -248,7 +261,7 @@ async function removeEntry(volumeId, entryId) {
 module.exports = {
   init, isVideo, isImage, isMedia, ffmpegAvailable,
   generateThumb, generatePreview,
-  hasThumb, hasPreview, countThumbs, checkMedia, exportThumbs, importThumbs, clearVolume, removeEntry,
+  hasThumb, hasPreview, countThumbs, cacheSize, checkMedia, exportThumbs, importThumbs, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
   VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,
   get cacheDir() { return cacheDir; }

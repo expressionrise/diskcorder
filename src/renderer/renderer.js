@@ -111,6 +111,7 @@ const state = {
   reachable: {},          // volumeId -> bool (drive currently connected?)
   capacity: {},           // volumeId -> { total, free, used } | null (when online)
   coverage: {},           // volumeId -> { made, total } thumbnails created so far
+  cacheBytes: {},         // volumeId -> local cache size in bytes (catalog cost)
   activeVolumeId: null,
   trail: [],              // [{ id: null|entryId, name }] — id null == volume root
   selectedEntry: null,    // full row from getEntry, for the detail pane
@@ -144,6 +145,7 @@ async function refreshCoverage(ids) {
     catch { state.coverage[v.id] = null; }
   }));
   document.querySelectorAll('.volume-card').forEach(card => renderCoverage(card, Number(card.dataset.id)));
+  if (state.activeVolumeId != null) refreshCacheSize(state.activeVolumeId);
 }
 
 // The persistent "X / Y thumbnails created" bar under the storage bar.
@@ -291,6 +293,8 @@ function renderVolDetail(card, id) {
     rows.push(['Free', humanFileSize(c.free)]);
   }
   rows.push(['Cataloged', `${humanFileSize(v.total_bytes)} · ${(v.file_count || 0).toLocaleString()} files`]);
+  const cache = state.cacheBytes[id];
+  if (cache != null) rows.push(['Catalog cache', humanFileSize(cache)]);
   if (!c) rows.push(['Status', state.reachable[id] ? 'reading…' : 'offline']);
   if (v.root_path) rows.push(['Path', v.root_path]);
 
@@ -299,8 +303,17 @@ function renderVolDetail(card, id) {
     const kEl = document.createElement('span'); kEl.className = 'vd-k'; kEl.textContent = k;
     const vEl = document.createElement('span'); vEl.className = 'vd-v'; vEl.textContent = val;
     if (k === 'Path') vEl.title = val;
+    if (k === 'Catalog cache') { kEl.title = vEl.title = 'Local disk this drive\'s thumbnails & previews use on this machine'; }
     box.append(kEl, vEl);
   }
+}
+
+// How much local disk a drive's cached thumbnails/previews use. Fetched for the
+// active (expanded) card, since that's where the detail block is shown.
+async function refreshCacheSize(id) {
+  if (id == null) return;
+  try { state.cacheBytes[id] = await api.cacheSize(id); } catch { return; }
+  document.querySelectorAll(`.volume-card[data-id="${id}"]`).forEach(card => renderVolDetail(card, id));
 }
 
 async function renameVolume(v) {
@@ -357,7 +370,10 @@ async function removeVolume(v) {
 // ---- file browser --------------------------------------------------------
 
 function clearBrowser() {
-  $('listing').innerHTML = '';
+  const listing = $('listing');
+  if (listing._lazyScroll) { listing.removeEventListener('scroll', listing._lazyScroll); listing._lazyScroll = null; }
+  listing.classList.remove('gallery');
+  listing.innerHTML = '';
   $('breadcrumb').innerHTML = '';
   $('listing-empty').classList.remove('hidden');
 }
@@ -369,6 +385,8 @@ async function openVolume(v) {
   state.searching = false;
   $('search-input').value = '';
   renderRail();
+  loadFolderTree();
+  refreshCacheSize(v.id);
   await loadListing();
   if (state.tab === 'space') await tmLoadLevel(null);
   else if (state.tab === 'large') await loadLargeFiles();
@@ -378,12 +396,14 @@ async function loadListing() {
   if (state.activeVolumeId == null) { clearBrowser(); return; }
   $('listing-empty').classList.add('hidden');
 
-  if (state.fileView === 'list') {
+  // List + Gallery are flat, whole-drive views; Folders browses the tree.
+  if (state.fileView === 'list' || state.fileView === 'gallery') {
     const rows = await api.listFiles(state.activeVolumeId);
     sortEntries(rows, false);
     $('breadcrumb').innerHTML =
       `<span class="crumb current">All files · ${rows.length.toLocaleString()}${rows.length >= 20000 ? '+' : ''}</span>`;
-    renderRows(rows, false, { showPath: true });
+    if (state.fileView === 'gallery') renderGallery(rows);
+    else renderRows(rows, false, { showPath: true });
     return;
   }
 
@@ -431,16 +451,98 @@ function parseTagList(tagsJson) {
   try { const a = JSON.parse(tagsJson); return Array.isArray(a) ? a : []; } catch { return []; }
 }
 
-// Files-view controls: folder/list toggle + sort key + direction.
+// Files-view controls: Folders / List / Gallery toggle + sort key + direction.
+function updateViewToggle() {
+  document.querySelectorAll('#file-view-toggle .seg-btn')
+    .forEach(b => b.classList.toggle('active', b.dataset.view === state.fileView));
+}
 document.querySelectorAll('#file-view-toggle .seg-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     if (state.fileView === btn.dataset.view) return;
     state.fileView = btn.dataset.view;
-    document.querySelectorAll('#file-view-toggle .seg-btn')
-      .forEach(b => b.classList.toggle('active', b === btn));
+    updateViewToggle();
     if (state.activeVolumeId != null && !state.searching) loadListing();
   });
 });
+
+// Jump the Folders view to a folder by id (from the rail tree or a List-row
+// path). Rebuilds the breadcrumb trail from the folder's ancestry.
+async function navigateToFolder(folderId) {
+  if (state.activeVolumeId == null) return;
+  const drive = state.volumes.find(v => v.id === state.activeVolumeId);
+  const trail = [{ id: null, name: drive ? drive.name : 'Drive' }];
+  if (folderId != null) {
+    const chain = await api.ancestry(folderId).catch(() => []);
+    for (const c of chain) if (c.is_dir) trail.push({ id: c.id, name: c.name });
+  }
+  state.trail = trail;
+  state.searching = false;
+  $('search-input').value = '';
+  if (state.fileView !== 'folders') { state.fileView = 'folders'; updateViewToggle(); }
+  if (state.tab !== 'files') switchTab('files');
+  await loadListing();
+  highlightTreeNode(folderId);
+}
+
+// ---- rail folder tree ----------------------------------------------------
+
+async function loadFolderTree() {
+  const head = $('tree-head'), tree = $('folder-tree');
+  if (state.activeVolumeId == null) {
+    head.classList.add('hidden'); tree.classList.add('hidden'); tree.innerHTML = '';
+    return;
+  }
+  head.classList.remove('hidden'); tree.classList.remove('hidden');
+  tree.innerHTML = '';
+  const folders = (await api.getChildren(state.activeVolumeId, null)).filter(k => k.is_dir);
+  if (!folders.length) { tree.innerHTML = '<div class="tree-empty">No subfolders.</div>'; return; }
+  for (const f of folders) tree.appendChild(buildTreeNode(f, 0));
+}
+
+function buildTreeNode(folder, depth) {
+  const node = document.createElement('div');
+  node.className = 'tree-node';
+  const row = document.createElement('div');
+  row.className = 'tree-row';
+  row.dataset.id = folder.id;
+
+  const tog = document.createElement('span');
+  tog.className = 'tree-toggle';
+  tog.textContent = '▸';
+  const name = document.createElement('span');
+  name.className = 'tree-name';
+  name.textContent = folder.alias || folder.name;
+  row.append(tog, name);
+
+  const kidsWrap = document.createElement('div');
+  kidsWrap.className = 'tree-children hidden';
+  kidsWrap.style.marginLeft = '10px';        // indent nested tiles as a group
+  let loaded = false, open = false;
+  tog.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    open = !open;
+    tog.textContent = open ? '▾' : '▸';
+    kidsWrap.classList.toggle('hidden', !open);
+    if (open && !loaded) {
+      loaded = true;
+      const kids = (await api.getChildren(state.activeVolumeId, folder.id)).filter(k => k.is_dir);
+      if (!kids.length) { tog.textContent = '·'; tog.classList.add('leaf'); }
+      for (const k of kids) kidsWrap.appendChild(buildTreeNode(k, depth + 1));
+    }
+  });
+  // The whole row navigates; the toggle (which stops propagation) only expands.
+  row.addEventListener('click', () => navigateToFolder(folder.id));
+
+  node.append(row, kidsWrap);
+  return node;
+}
+
+function highlightTreeNode(folderId) {
+  document.querySelectorAll('.folder-tree .tree-row.active').forEach(r => r.classList.remove('active'));
+  if (folderId == null) return;
+  const r = document.querySelector(`.folder-tree .tree-row[data-id="${folderId}"]`);
+  if (r) r.classList.add('active');
+}
 $('file-sort').addEventListener('change', (e) => {
   state.fileSort = e.target.value;
   if (state.activeVolumeId != null && !state.searching) loadListing();
@@ -473,81 +575,144 @@ function renderBreadcrumb() {
   });
 }
 
+// Render a large item set incrementally: paint ~2 screens up front, then append
+// more as the user nears the bottom. Keeps huge lists from blocking the UI.
+function lazyRender(container, items, makeEl) {
+  container.innerHTML = '';
+  if (container._lazyScroll) { container.removeEventListener('scroll', container._lazyScroll); container._lazyScroll = null; }
+  if (!items.length) return;
+
+  const rowH = 44;                                   // rough row height estimate
+  const perScreen = Math.max(20, Math.ceil((container.clientHeight || 600) / rowH));
+  const batch = perScreen * 2;                       // ~2 screens per chunk
+  let i = 0;
+
+  const paint = () => {
+    const frag = document.createDocumentFragment();
+    const end = Math.min(items.length, i + batch);
+    for (; i < end; i++) {
+      const el = makeEl(items[i], i);
+      if (el) frag.appendChild(el);
+    }
+    container.appendChild(frag);
+    if (i >= items.length && container._lazyScroll) {
+      container.removeEventListener('scroll', container._lazyScroll);
+      container._lazyScroll = null;
+    }
+  };
+  paint();                                           // first ~2 screens
+
+  if (i < items.length) {
+    const onScroll = () => {
+      if (container.scrollTop + container.clientHeight >= container.scrollHeight - rowH * perScreen) paint();
+    };
+    container._lazyScroll = onScroll;
+    container.addEventListener('scroll', onScroll);
+  }
+}
+
 function renderRows(rows, asSearch, opts = {}) {
   const listing = $('listing');
-  listing.innerHTML = '';
   const showPath = !!opts.showPath;
+  listing.classList.remove('gallery');
 
   if (!rows.length) {
+    listing.innerHTML = '';
+    if (listing._lazyScroll) { listing.removeEventListener('scroll', listing._lazyScroll); listing._lazyScroll = null; }
     const e = document.createElement('div');
     e.className = 'listing-empty';
     e.textContent = asSearch ? 'No matches.' : (showPath ? 'This drive has no files.' : 'This folder is empty.');
     listing.appendChild(e);
     return;
   }
+  lazyRender(listing, rows, (r) => makeFileRow(r, asSearch, showPath));
+}
 
-  for (const r of rows) {
-    const volId = asSearch ? r.volume_id : state.activeVolumeId;
-    const row = document.createElement('div');
-    row.className = 'row';
-    row.dataset.id = r.id;
-    if (state.selectedEntry && state.selectedEntry.id === r.id) row.classList.add('selected');
+function makeFileRow(r, asSearch, showPath) {
+  const volId = asSearch ? r.volume_id : state.activeVolumeId;
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.dataset.id = r.id;
+  if (state.selectedEntry && state.selectedEntry.id === r.id) row.classList.add('selected');
 
-    const icon = document.createElement('span');
-    icon.className = 'ic';
-    icon.innerHTML = iconFor(r.is_dir, r.ext);
+  const icon = document.createElement('span');
+  icon.className = 'ic';
+  icon.innerHTML = iconFor(r.is_dir, r.ext);
+  if (!r.is_dir && isVideoExt(r.ext)) { icon.classList.add('thumb'); wireThumb(icon, volId, r.id); }
+  else if (!r.is_dir && isImageExt(r.ext)) { icon.classList.add('thumb'); wireImageThumb(icon, volId, r.id); }
 
-    // Video rows get a lazy thumbnail + hover preview; images get a thumbnail.
-    if (!r.is_dir && isVideoExt(r.ext)) {
-      icon.classList.add('thumb');
-      wireThumb(icon, volId, r.id);
-    } else if (!r.is_dir && isImageExt(r.ext)) {
-      icon.classList.add('thumb');
-      wireImageThumb(icon, volId, r.id);
+  const label = document.createElement('div');
+  label.className = 'label';
+  const nm = document.createElement('div');
+  nm.className = 'nm';
+  nm.textContent = r.alias || r.name;
+  if (r.alias) { const tag = document.createElement('span'); tag.className = 'alias-tag'; tag.textContent = r.name; nm.appendChild(tag); }
+  if (r.note) { const dot = document.createElement('span'); dot.className = 'note-dot'; dot.title = 'Has notes'; nm.appendChild(dot); }
+  label.appendChild(nm);
+  if (asSearch || showPath) {
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = asSearch ? `${r.volume_name} · ${r.rel_path}` : r.rel_path;
+    // In the flat List view the path is clickable — jump to that folder.
+    if (showPath && !asSearch) {
+      sub.classList.add('sub-link');
+      sub.title = 'Open this folder';
+      sub.addEventListener('click', (e) => { e.stopPropagation(); navigateToFolder(r.parent_id ?? null); });
     }
-
-    const label = document.createElement('div');
-    label.className = 'label';
-    const nm = document.createElement('div');
-    nm.className = 'nm';
-    nm.textContent = r.alias || r.name;
-    if (r.alias) {
-      const tag = document.createElement('span');
-      tag.className = 'alias-tag';
-      tag.textContent = r.name;
-      nm.appendChild(tag);
-    }
-    if (r.note) {
-      const dot = document.createElement('span');
-      dot.className = 'note-dot';
-      dot.title = 'Has notes';
-      nm.appendChild(dot);
-    }
-    label.appendChild(nm);
-    if (asSearch || showPath) {
-      const sub = document.createElement('div');
-      sub.className = 'sub';
-      sub.textContent = asSearch ? `${r.volume_name} · ${r.rel_path}` : r.rel_path;
-      label.appendChild(sub);
-    }
-
-    const sz = document.createElement('span');
-    sz.className = 'sz';
-    // Folders show how much their whole subtree holds (WizTree-style).
-    sz.textContent = r.is_dir ? humanFileSize(r.tree_size) : humanFileSize(r.size);
-    if (r.is_dir) sz.classList.add('sz-dir');
-
-    row.append(icon, label, sz);
-
-    row.addEventListener('click', () => selectEntry(r.id));
-    if (r.is_dir && !asSearch && !showPath) {
-      row.addEventListener('dblclick', () => {
-        state.trail.push({ id: r.id, name: r.alias || r.name });
-        loadListing();
-      });
-    }
-    listing.appendChild(row);
+    label.appendChild(sub);
   }
+
+  const sz = document.createElement('span');
+  sz.className = 'sz';
+  sz.textContent = r.is_dir ? humanFileSize(r.tree_size) : humanFileSize(r.size);
+  if (r.is_dir) sz.classList.add('sz-dir');
+
+  row.append(icon, label, sz);
+  row.addEventListener('click', () => selectEntry(r.id));
+  if (r.is_dir && !asSearch && !showPath) {
+    row.addEventListener('dblclick', () => {
+      state.trail.push({ id: r.id, name: r.alias || r.name });
+      loadListing();
+    });
+  }
+  return row;
+}
+
+// Gallery view: large thumbnail tiles for every file on the drive.
+function renderGallery(rows) {
+  const listing = $('listing');
+  listing.classList.add('gallery');
+  if (!rows.length) {
+    listing.innerHTML = '';
+    if (listing._lazyScroll) { listing.removeEventListener('scroll', listing._lazyScroll); listing._lazyScroll = null; }
+    const e = document.createElement('div');
+    e.className = 'listing-empty';
+    e.textContent = 'This drive has no files.';
+    listing.appendChild(e);
+    return;
+  }
+  const volId = state.activeVolumeId;
+  lazyRender(listing, rows, (r) => {
+    const tile = document.createElement('div');
+    tile.className = 'gtile';
+    tile.dataset.id = r.id;
+    if (state.selectedEntry && state.selectedEntry.id === r.id) tile.classList.add('selected');
+
+    const thumb = document.createElement('div');
+    thumb.className = 'gthumb ic';
+    thumb.innerHTML = iconFor(r.is_dir, r.ext);
+    if (isVideoExt(r.ext)) { thumb.classList.add('thumb'); wireThumb(thumb, volId, r.id); }
+    else if (isImageExt(r.ext)) { thumb.classList.add('thumb'); wireImageThumb(thumb, volId, r.id); }
+
+    const cap = document.createElement('div');
+    cap.className = 'gcap';
+    cap.textContent = r.alias || r.name;
+    cap.title = r.rel_path;
+
+    tile.append(thumb, cap);
+    tile.addEventListener('click', () => selectEntry(r.id));
+    return tile;
+  });
 }
 
 // Lazily load a video thumbnail; on hover, generate-if-needed and play the
@@ -1451,18 +1616,25 @@ async function loadLargeFiles() {
   const rows = await api.largeFiles(state.activeVolumeId, opts).catch(() => []);
   sortLarge(rows);
 
-  list.innerHTML = '';
-  if (!rows.length) { summary.textContent = 'No files match these filters.'; return; }
+  if (!rows.length) {
+    list.innerHTML = '';
+    if (list._lazyScroll) { list.removeEventListener('scroll', list._lazyScroll); list._lazyScroll = null; }
+    summary.textContent = 'No files match these filters.';
+    return;
+  }
 
-  if ($('large-group-year').checked) renderLargeGrouped(rows, list);
-  else rows.forEach((r, i) => list.appendChild(buildLargeRow(r, i + 1)));
+  // Build a flat render list (optionally with year-header items) and lazy-render.
+  const items = $('large-group-year').checked
+    ? groupLargeByYear(rows)
+    : rows.map((r, i) => ({ row: r, rank: i + 1 }));
+  lazyRender(list, items, (it) => it.head ? buildYearHead(it) : buildLargeRow(it.row, it.rank));
 
   const totalBytes = rows.reduce((n, r) => n + (r.size || 0), 0);
   summary.textContent = `${rows.length.toLocaleString()} file${rows.length === 1 ? '' : 's'} · ${humanFileSize(totalBytes)}`;
 }
 
-// Group rows under year headers (years newest-first; rows keep the chosen sort).
-function renderLargeGrouped(rows, list) {
+// Flatten rows into header + row items grouped by year (years newest-first).
+function groupLargeByYear(rows) {
   const groups = new Map();
   for (const r of rows) {
     const y = yearOf(r.mtime);
@@ -1475,16 +1647,21 @@ function renderLargeGrouped(rows, list) {
     if (b === 'Unknown date') return -1;
     return b - a;
   });
+  const items = [];
   for (const key of keys) {
-    const items = groups.get(key);
-    const bytes = items.reduce((n, r) => n + (r.size || 0), 0);
-    const head = document.createElement('div');
-    head.className = 'lg-year-head';
-    head.innerHTML = `<span></span><span class="lg-year-meta">${items.length} file${items.length === 1 ? '' : 's'} · ${humanFileSize(bytes)}</span>`;
-    head.firstChild.textContent = key;
-    list.appendChild(head);
-    items.forEach((r, i) => list.appendChild(buildLargeRow(r, i + 1)));
+    const arr = groups.get(key);
+    items.push({ head: true, year: key, count: arr.length, bytes: arr.reduce((n, r) => n + (r.size || 0), 0) });
+    arr.forEach((r, i) => items.push({ row: r, rank: i + 1 }));
   }
+  return items;
+}
+
+function buildYearHead(it) {
+  const head = document.createElement('div');
+  head.className = 'lg-year-head';
+  head.innerHTML = `<span></span><span class="lg-year-meta">${it.count} file${it.count === 1 ? '' : 's'} · ${humanFileSize(it.bytes)}</span>`;
+  head.firstChild.textContent = it.year;
+  return head;
 }
 
 function buildLargeRow(r, rank) {
@@ -1905,6 +2082,20 @@ function tmRenderLegend() {
     box.appendChild(item);
   }
 }
+
+// ---- color theme ---------------------------------------------------------
+
+const THEME_CLASS = { dark: '', blue: 'theme-blue', dim: 'theme-dim', light: 'theme-light' };
+function applyTheme(name) {
+  if (!(name in THEME_CLASS)) name = 'dark';
+  document.body.classList.remove('theme-blue', 'theme-dim', 'theme-light');
+  if (THEME_CLASS[name]) document.body.classList.add(THEME_CLASS[name]);
+  try { localStorage.setItem('diskcorder-theme', name); } catch { /* ignore */ }
+  const sel = $('theme-select');
+  if (sel && sel.value !== name) sel.value = name;
+}
+$('theme-select').addEventListener('change', (e) => applyTheme(e.target.value));
+applyTheme((() => { try { return localStorage.getItem('diskcorder-theme') || 'dark'; } catch { return 'dark'; } })());
 
 // ---- boot ----------------------------------------------------------------
 

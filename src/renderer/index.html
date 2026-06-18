@@ -36,6 +36,12 @@
     </div>
     <button id="import-drive" class="btn btn-ghost" title="Import a drive catalog (.json)">Import</button>
     <button id="map-drive" class="btn btn-primary">Map a drive</button>
+    <select id="theme-select" class="theme-select" title="Color theme" aria-label="Color theme">
+      <option value="dark">Gold dark</option>
+      <option value="blue">GitHub dark</option>
+      <option value="dim">Dim</option>
+      <option value="light">Light</option>
+    </select>
     <button id="info-btn" class="btn btn-ghost info-btn" title="About Diskcorder — what it does and how to use it" aria-label="Info">?</button>
   </header>
 
@@ -47,6 +53,8 @@
       <div id="rail-empty" class="rail-empty">
         No drives mapped yet. Plug one in and hit <strong>Map a drive</strong>.
       </div>
+      <div class="rail-head rail-head-tree hidden" id="tree-head">Folders</div>
+      <div id="folder-tree" class="folder-tree hidden"></div>
     </aside>
 
     <!-- Browser -->
@@ -65,6 +73,7 @@
             <div class="seg" id="file-view-toggle">
               <button class="seg-btn active" data-view="folders" title="Browse folder by folder">Folders</button>
               <button class="seg-btn" data-view="list" title="Flat list of every file with its location">List</button>
+              <button class="seg-btn" data-view="gallery" title="Large thumbnail previews">Gallery</button>
             </div>
             <label>Sort
               <select id="file-sort">
@@ -255,8 +264,10 @@
 
         <h3>Other views</h3>
         <ul>
-          <li><strong>Files</strong> — browse <em>Folders</em> (the tree) or switch to <em>List</em> for a
-              flat list of every file with its location. Sort either by name, size, date, label, or tag.</li>
+          <li><strong>Files</strong> — switch between <em>Folders</em> (tree), <em>List</em> (flat
+              filenames + clickable locations), and <em>Gallery</em> (large thumbnails). Sort by name,
+              size, date, label, or tag. Use the <strong>folder tree in the left rail</strong> to jump
+              to any folder. Long lists load more as you scroll.</li>
           <li><strong>Large files</strong> — the biggest files on the drive, filterable by size and
               modified date, sortable, and optionally grouped by year — to find what's worth clearing
               or archiving.</li>

@@ -118,9 +118,16 @@ ipcMain.handle('volumes:setIcon', (_e, id, icon) => {
   db.setVolumeIcon(assertInt(id), icon == null ? null : assertStr(icon, 'icon', 16));
   return true;
 });
-ipcMain.handle('volumes:reachable', (_e, id) => {
+ipcMain.handle('volumes:reachable', async (_e, id) => {
   const vol = db.getVolume(assertInt(id));
-  return !!(vol && vol.root_path && fs.existsSync(vol.root_path));
+  if (!vol || !vol.root_path) return false;
+  try {
+    // Check if path exists and is actually accessible (not just that the path object exists)
+    await fsp.access(vol.root_path, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 // Real filesystem capacity for the drive holding this volume's root, so the

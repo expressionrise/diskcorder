@@ -185,8 +185,30 @@
       <div id="view-test" class="view hidden">
         <div class="test-head">
           <span class="test-head-title">Test Drive Health</span>
-          <div class="test-controls">
-            <label>Sample size
+        </div>
+
+        <div id="test-drive-info" class="test-drive-info hidden">
+          <div class="info-row">
+            <span class="info-label">Drive:</span>
+            <span id="test-drive-name" class="info-value"></span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Reported size:</span>
+            <span id="test-reported-size" class="info-value"></span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Files on drive:</span>
+            <span id="test-file-count" class="info-value"></span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Used space:</span>
+            <span id="test-used-space" class="info-value"></span>
+          </div>
+        </div>
+
+        <div class="test-controls">
+          <div class="control-group">
+            <label>File integrity test - Sample size
               <select id="test-sample">
                 <option value="all">All files</option>
                 <option value="1000" selected>1,000 files</option>
@@ -196,6 +218,13 @@
               </select>
             </label>
             <button id="test-start" class="btn btn-primary mini-btn">Start test</button>
+          </div>
+
+          <div class="control-group">
+            <label title="Verify the drive's actual capacity matches its claim (detects fake/counterfeit drives)">
+              Verify drive capacity (detects fakes)
+            </label>
+            <button id="test-capacity" class="btn btn-primary mini-btn">Verify capacity</button>
           </div>
         </div>
         <div id="test-status" class="test-status hidden">

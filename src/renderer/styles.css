@@ -251,6 +251,28 @@ html, body {
 .test-success { padding: 12px; text-align: center; color: #22a74f; font-weight: 600; }
 .test-empty { padding: 24px; color: var(--text-faint); text-align: center; }
 
+.test-drive-info { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.info-row { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 4px 0; font-size: 12px; }
+.info-label { color: var(--text-dim); }
+.info-value { color: var(--text); font-weight: 500; }
+
+.test-controls { display: flex; flex-direction: column; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.control-group { display: flex; gap: 8px; align-items: center; }
+.control-group label { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+.control-group select { padding: 4px 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: var(--radius-sm); font-size: 12px; }
+
+.capacity-result { padding: 16px; border-radius: var(--radius); border: 1px solid var(--line); margin-bottom: 12px; }
+.capacity-result.genuine { background: color-mix(in srgb, #22a74f 10%, transparent); border-color: #22a74f; }
+.capacity-result.fake { background: color-mix(in srgb, var(--danger) 15%, transparent); border-color: var(--danger); }
+.capacity-result.suspect { background: color-mix(in srgb, #ff9800 10%, transparent); border-color: #ff9800; }
+.capacity-verdict { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.capacity-result.genuine .capacity-verdict { color: #22a74f; }
+.capacity-result.fake .capacity-verdict { color: var(--danger); }
+.capacity-result.suspect .capacity-verdict { color: #ff9800; }
+.capacity-detail { font-size: 12px; color: var(--text); margin-bottom: 12px; line-height: 1.4; }
+.capacity-info { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11px; color: var(--text-dim); }
+.capacity-info div { padding: 4px 0; }
+
 /* Backup tab */
 .backup-head {
   display: flex; align-items: center; justify-content: space-between;

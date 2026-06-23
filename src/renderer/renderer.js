@@ -3059,16 +3059,31 @@ let testResults = [];
 
 function initTestTab() {
   const empty = $('test-empty');
+  const info = $('test-drive-info');
   const controls = $('test-start').parentElement;
   if (!state.activeVolumeId) {
     empty.classList.remove('hidden');
+    info.classList.add('hidden');
     controls.classList.add('hidden');
     $('test-status').classList.add('hidden');
     $('test-results').classList.add('hidden');
     return;
   }
   empty.classList.add('hidden');
+  info.classList.remove('hidden');
   controls.classList.remove('hidden');
+
+  // Show drive info
+  const vol = state.volumes.find(v => v.id === state.activeVolumeId);
+  if (vol) {
+    $('test-drive-name').textContent = vol.name;
+    $('test-reported-size').textContent = humanFileSize(vol.total_bytes || 0);
+    $('test-file-count').textContent = (vol.file_count || 0).toLocaleString() + ' files';
+    const cap = state.capacity[vol.id];
+    const used = cap ? cap.used : 0;
+    const total = cap ? cap.total : (vol.total_bytes || 0);
+    $('test-used-space').textContent = humanFileSize(used) + ' / ' + humanFileSize(total);
+  }
 }
 
 async function startDriveTest() {
@@ -3160,7 +3175,87 @@ function showTestResults(tested, passed, failed) {
   }
 }
 
+async function verifyDriveCapacity() {
+  if (testRunning || !state.activeVolumeId) return;
+  const vol = state.volumes.find(v => v.id === state.activeVolumeId);
+  if (!vol) return;
+
+  testRunning = true;
+  $('test-capacity').disabled = true;
+  $('test-start').disabled = true;
+  $('test-status').classList.remove('hidden');
+  $('test-results').classList.add('hidden');
+
+  const claimedBytes = vol.total_bytes || 0;
+  const claimedStr = humanFileSize(claimedBytes);
+
+  try {
+    $('test-progress-text').textContent = 'Getting drive capacity…';
+    const capacity = await api.driveCapacity(vol.id);
+    if (!capacity) { toast('Could not read drive capacity.', true); return; }
+
+    const actualBytes = capacity.total;
+    const actualStr = humanFileSize(actualBytes);
+    const ratio = actualBytes / claimedBytes;
+    const percentReal = Math.round(ratio * 100);
+
+    let verdict = 'GENUINE';
+    let verdict_detail = '';
+    let verdict_class = 'genuine';
+
+    if (ratio < 0.9) {
+      verdict = 'FAKE/COUNTERFEIT';
+      verdict_detail = `Drive claims ${claimedStr} but only has ${actualStr} (${percentReal}% real capacity)`;
+      verdict_class = 'fake';
+    } else if (ratio < 0.99) {
+      verdict = 'POSSIBLY COUNTERFEIT';
+      verdict_detail = `Slight discrepancy: claims ${claimedStr}, has ${actualStr} (${percentReal}%)`;
+      verdict_class = 'suspect';
+    } else if (ratio > 1.01) {
+      verdict = 'MISCONFIGURED?';
+      verdict_detail = `Drive appears larger than claimed: ${actualStr} vs claimed ${claimedStr}`;
+      verdict_class = 'suspect';
+    } else {
+      verdict_detail = `Capacity matches: ${claimedStr} = ${actualStr}`;
+    }
+
+    showCapacityResults(vol.name, claimedStr, actualStr, percentReal, verdict, verdict_detail, verdict_class);
+  } catch (err) {
+    toast('Capacity test failed: ' + err.message, true);
+  } finally {
+    testRunning = false;
+    $('test-capacity').disabled = false;
+    $('test-start').disabled = false;
+    $('test-status').classList.add('hidden');
+  }
+}
+
+function showCapacityResults(driveName, claimed, actual, percent, verdict, detail, verdictClass) {
+  $('test-results').classList.remove('hidden');
+  $('test-tested').textContent = 'Verdict:';
+  $('test-passed').textContent = verdict;
+  $('test-failed').textContent = percent + '%';
+
+  const list = $('test-list');
+  list.innerHTML = '';
+
+  const item = document.createElement('div');
+  item.className = 'capacity-result ' + verdictClass;
+  item.innerHTML = `
+    <div class="capacity-verdict">${verdict}</div>
+    <div class="capacity-detail">${detail}</div>
+    <div class="capacity-info">
+      <div>Drive: ${driveName}</div>
+      <div>Claimed capacity: ${claimed}</div>
+      <div>Actual capacity: ${actual}</div>
+      <div>Real capacity: ${percent}%</div>
+    </div>
+  `;
+  list.appendChild(item);
+}
+
 $('test-start').addEventListener('click', startDriveTest);
+$('test-capacity').addEventListener('click', verifyDriveCapacity);
 $('test-cancel').addEventListener('click', () => { testRunning = false; });
 $('test-clear').addEventListener('click', () => {
   testResults = [];

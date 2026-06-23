@@ -258,16 +258,16 @@ function renderRail() {
       </div>
       <div class="vol-detail${v.id === state.activeVolumeId ? '' : ' hidden'}"></div>
       <div class="vol-actions">
-        <button class="mini" data-act="sync" title="Update the catalog from the drive — add new files and drop ones you deleted. Keeps your notes, labels, and tags.">Sync</button>
+        <button class="mini" data-act="sync" title="Re-read this drive and update the catalog — new files appear, deleted ones are removed, notes and labels are kept.">Update</button>
         <button class="mini" data-act="backup" title="Copy this drive's files to another connected drive (additive — copies new &amp; changed files, never deletes)">Backup</button>
-        <button class="mini" data-act="rescan" title="Re-pick this drive's location and rebuild its catalog (use if its drive letter changed)">Re-scan</button>
-        <button class="mini" data-act="thumbs" title="Generate the still thumbnails for every image and video on this drive. Resumes where it left off and skips ones already made.">Thumbnails</button>
-        <button class="mini" data-act="rename" title="Rename this drive's label in Diskcorder (the disk itself is untouched)">Rename label</button>
+        <button class="mini" data-act="rescan" title="Point this drive to a new folder or drive letter and rebuild its catalog.">Relocate</button>
+        <button class="mini" data-act="thumbs" title="Generate the still previews for every image and video on this drive. Resumes where it left off and skips ones already made.">Previews</button>
+        <button class="mini" data-act="rename" title="Rename this drive's label in Diskcorder (the disk itself is untouched)">Rename</button>
         <button class="mini" data-act="export" title="Save this drive's catalog to a .json file you can import elsewhere">Export catalog</button>
-        <button class="mini mini-danger" data-act="remove" title="Forget this drive from Diskcorder (the disk and its files are untouched)">Forget drive</button>
+        <button class="mini mini-danger" data-act="remove" title="Remove this drive from Diskcorder (the disk and its files are untouched)">Remove</button>
       </div>
-      <label class="vol-autosync" title="Automatically sync this drive's catalog whenever it connects">
-        <input type="checkbox" data-act="autosync" /> Auto-sync when connected
+      <label class="vol-autosync" title="Automatically update this drive's catalog whenever it connects">
+        <input type="checkbox" data-act="autosync" /> Auto-update on connect
       </label>`;
     card.querySelector('.vname-text').textContent = v.name;
     const avatar = card.querySelector('.vavatar');
@@ -968,7 +968,7 @@ function openContextMenu(e, r, asSearch) {
   };
   const sep = () => { const s = document.createElement('div'); s.className = 'ctx-sep'; menu.appendChild(s); };
 
-  item('Details / preview', () => selectEntry(r.id));
+  item('Details', () => selectEntry(r.id));
   if (!r.is_dir) {
     item('Open', async () => {
       const res = await api.openFile(r.id);
@@ -979,7 +979,7 @@ function openContextMenu(e, r, asSearch) {
       if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the file.', true);
     });
   }
-  item('Open file location', async () => {
+  item('Locate on disk', async () => {
     const res = await api.revealInExplorer(r.id);
     if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the location.', true);
   });
@@ -1197,7 +1197,7 @@ function renderDetail(entry) {
   // Reset the integrity-test control for the newly shown entry.
   const testBtn = $('test-file');
   testBtn.classList.toggle('hidden', !!entry.is_dir);
-  testBtn.textContent = 'Test file for damage…';
+  testBtn.textContent = 'Verify file…';
   const testRes = $('test-result');
   testRes.className = 'test-result hidden';
   testRes.textContent = '';
@@ -1664,7 +1664,9 @@ async function startTransferFlow(move) {
     return;
   }
   if (res.status === 'skipped') { toast('Skipped — already exists at destination.'); return; }
-  toast((move ? 'Moved' : 'Copied') + ' to destination. Re-scan that drive to catalog it.');
+  const destVol = state.volumes.find(v => v.id === choice.destVolumeId);
+  const destName = destVol ? destVol.name : 'destination';
+  toast((move ? 'Moved' : 'Copied') + ' to "' + destName + '" — open that drive to see it in the catalog.');
   if (move) { await loadRail(); if (!state.searching) await loadListing(); clearDetail(); }
 }
 
@@ -1672,18 +1674,18 @@ async function startTransferFlow(move) {
 
 async function generateThumbnails(v) {
   if (!state.reachable[v.id]) { toast('Connect “' + v.name + '” first.', true); return; }
-  if (!state.ffmpegReady) { toast('ffmpeg is not available — thumbnails disabled.', true); return; }
-  if (thumbsBusy) { toast('A thumbnail pass is already running — watch the bar at the bottom.'); return; }
+  if (!state.ffmpegReady) { toast('ffmpeg not found — previews disabled.', true); return; }
+  if (thumbsBusy) { toast('Preview generation is already running — see the bar below.'); return; }
   thumbsBusy = true;
-  const drawer = showOp('thumbs', `Thumbnails · ${v.name}`);
+  const drawer = showOp('thumbs', `Previews · ${v.name}`);
   const res = await api.generateThumbs(v.id, { previews: false }).catch(err => ({ ok: false, error: err.message }));
   hideOp(drawer);
   thumbsBusy = false;
   await refreshCoverage([v.id]);
-  if (!res || !res.ok) { toast(res && res.error ? res.error : 'Thumbnail generation failed.', true); }
-  else if (res.total === 0) { toast('All thumbnails are already up to date.'); }
+  if (!res || !res.ok) { toast(res && res.error ? res.error : 'Preview generation failed.', true); }
+  else if (res.total === 0) { toast('All previews are already up to date.'); }
   else {
-    toast(res.canceled ? 'Thumbnail generation paused — resumes where it left off.' : `Generated ${res.done} thumbnails.`);
+    toast(res.canceled ? 'Preview generation paused.' : `Generated ${res.done} previews.`);
     if (v.id === state.activeVolumeId && !state.searching) await loadListing();
   }
   drainAutoThumbs(); // resume any auto work that was waiting
@@ -1728,16 +1730,17 @@ async function mapDrive(existingVol) {
   if (!picked) return;
 
   const name = await promptModal({
-    title: existingVol ? 'Re-scan drive' : 'Name this drive',
+    title: existingVol ? 'Relocate drive' : 'Name this drive',
     sub: picked.root,
     value: existingVol ? existingVol.name : (picked.suggestedName || ''),
-    confirmText: existingVol ? 'Re-scan' : 'Map it'
+    confirmText: existingVol ? 'Relocate' : 'Map it'
   });
   if (name == null || !name.trim()) return;
 
   scanning = true;
   $('map-drive').disabled = true;
   showScan(true);
+  if (existingVol) $('scan-title').textContent = `Relocating ${existingVol.name}…`;
   const unsub = api.onScanProgress(({ count, current }) => {
     $('scan-count').textContent = `${count.toLocaleString()} items`;
     $('scan-current').textContent = current || '';
@@ -1758,7 +1761,7 @@ async function mapDrive(existingVol) {
     const vol = state.volumes.find(v => v.id === res.volumeId);
     if (vol) await openVolume(vol);
     const skipNote = res.skipped ? ` (${res.skipped} unreadable item${res.skipped === 1 ? '' : 's'} skipped)` : '';
-    toast((existingVol ? 'Drive re-scanned.' : 'Drive mapped.') + skipNote);
+    toast((existingVol ? 'Drive relocated and updated.' : 'Drive mapped.') + skipNote);
     // Kick off thumbnail generation in the background (stills only — hover
     // preview clips are made on demand). Resumable and skips existing work.
     if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);
@@ -1778,7 +1781,7 @@ async function mapDrive(existingVol) {
 async function syncDrive(v, auto = false) {
   if (scanning) return;
   if (!state.reachable[v.id] || !v.root_path) {
-    if (!auto) toast('Connect “' + v.name + '” to sync its catalog.', true);
+    if (!auto) toast('Connect “' + v.name + '” to update its catalog.', true);
     return;
   }
   const before = v.file_count || 0;
@@ -1786,7 +1789,7 @@ async function syncDrive(v, auto = false) {
   scanning = true;
   $('map-drive').disabled = true;
   showScan(true);
-  $('scan-title').textContent = `Syncing ${v.name}…`;
+  $('scan-title').textContent = `Updating ${v.name}…`;
   const unsub = api.onScanProgress(({ count, current }) => {
     $('scan-count').textContent = `${count.toLocaleString()} items`;
     $('scan-current').textContent = current || '';
@@ -1794,18 +1797,18 @@ async function syncDrive(v, auto = false) {
 
   try {
     const res = await api.scanDrive({ root: v.root_path, name: v.name, existingVolumeId: v.id });
-    if (res && res.canceled) { if (!auto) toast('Sync canceled.'); return; }
-    if (!res || !res.ok) { toast(res && res.error ? res.error : 'Sync failed.', true); return; }
+    if (res && res.canceled) { if (!auto) toast('Update canceled.'); return; }
+    if (!res || !res.ok) { toast(res && res.error ? res.error : 'Update failed.', true); return; }
     await loadRail();
     const vol = state.volumes.find(x => x.id === res.volumeId) || v;
     const delta = (vol.file_count || 0) - before;
     const deltaStr = delta === 0 ? 'no changes' : `${delta > 0 ? '+' : ''}${delta.toLocaleString()} files`;
-    toast(`Synced “${vol.name}” — ${(vol.file_count || 0).toLocaleString()} files (${deltaStr}).`);
+    toast(`Updated “${vol.name}” — ${(vol.file_count || 0).toLocaleString()} files (${deltaStr}).`);
     // Entry ids changed, so reopen at the root to avoid a stale breadcrumb trail.
     if (vol.id === state.activeVolumeId) await openVolume(vol);
     if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);   // thumbnail any new media
   } catch (err) {
-    toast(err.message || 'Sync failed.', true);
+    toast(err.message || 'Update failed.', true);
   } finally {
     unsub();
     showScan(false);

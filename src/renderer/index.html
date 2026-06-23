@@ -28,7 +28,7 @@
     </div>
     <div class="search">
       <input id="search-input" type="search"
-             placeholder="Search every drive — names, notes, aliases…"
+             placeholder="Search drives — names, notes, labels…"
              autocomplete="off" />
       <label class="scope" title="Limit search to the open drive">
         <input id="scope-toggle" type="checkbox" /> this drive
@@ -56,9 +56,9 @@
     <section class="browser">
       <div class="tabbar">
         <button id="tab-files" class="tab active">Files</button>
-        <button id="tab-starred" class="tab">★ Starred</button>
-        <button id="tab-large" class="tab">Large files</button>
-        <button id="tab-space" class="tab">Space map</button>
+        <button id="tab-starred" class="tab">Starred</button>
+        <button id="tab-large" class="tab">Large Files</button>
+        <button id="tab-space" class="tab">Space Map</button>
         <button id="tab-dupes" class="tab">Duplicates</button>
         <button id="tab-backup" class="tab">Backup</button>
       </div>
@@ -80,7 +80,7 @@
                 <option value="type">Type</option>
                 <option value="video">Videos first</option>
                 <option value="image">Images first</option>
-                <option value="flag">Symbol</option>
+                <option value="flag">Flag</option>
                 <option value="label">Label</option>
                 <option value="tag">Tag</option>
               </select>
@@ -196,7 +196,7 @@
 
     <!-- Detail -->
     <aside class="detail" id="detail">
-      <div class="detail-empty" id="detail-empty">Pick a file or folder to add notes and a rename.</div>
+      <div class="detail-empty" id="detail-empty">Select a file or folder to view details and add notes.</div>
       <div class="detail-body hidden" id="detail-body">
         <div class="detail-media hidden" id="detail-media"></div>
         <div class="detail-icon" id="detail-icon"></div>
@@ -204,11 +204,11 @@
         <div class="detail-path" id="detail-path"></div>
         <dl class="detail-meta" id="detail-meta"></dl>
 
-        <button id="reveal-loc" class="btn btn-ghost reveal-btn">Open file location in Explorer…</button>
-        <button id="test-file" class="btn btn-ghost reveal-btn" title="Read the file from the drive to check it isn't corrupt or unreadable">Test file for damage…</button>
+        <button id="reveal-loc" class="btn btn-ghost reveal-btn">Locate on disk</button>
+        <button id="test-file" class="btn btn-ghost reveal-btn" title="Read the file from the drive to check it isn't corrupt or unreadable">Verify file…</button>
         <div id="test-result" class="test-result hidden"></div>
 
-        <label class="field-label" for="alias-input">Rename (label only — safe offline)</label>
+        <label class="field-label" for="alias-input">Label</label>
         <input id="alias-input" class="field" type="text" placeholder="e.g. Devon trip raw footage" />
 
         <label class="field-label" for="note-input">Notes</label>
@@ -276,27 +276,27 @@
           <li>A blue <strong>coverage bar</strong> shows how many thumbnails already exist
               (e.g. <code>1,240 / 5,678 thumbnails</code>); a gold bar appears below it while a
               generation pass is running.</li>
-          <li><strong>Sync</strong> — update the catalog from the connected drive: new files are added,
-              deleted ones drop out, and your notes, labels, and tags are kept. Tick
-              <strong>Auto-sync when connected</strong> on a drive to do this automatically each time it's plugged in.</li>
+          <li><strong>Update</strong> — re-read the connected drive and refresh the catalog: new files appear,
+              deleted ones are removed, and your notes, labels, and tags are kept. Enable
+              <strong>Auto-update on connect</strong> on a drive to refresh automatically each time it's plugged in.</li>
           <li><strong>Backup</strong> — copy this drive's files to another connected drive. Pick the
               destination and which top-level folders to include; it copies new and changed files and
               skips unchanged ones (additive — it never deletes anything at the destination).</li>
-          <li><strong>Re-scan</strong> — re-pick the drive's location and rebuild its catalog (use if its drive letter changed).</li>
-          <li><strong>Thumbnails</strong> — generate the still thumbnails for every image and video on
+          <li><strong>Relocate</strong> — point this drive to a new folder or drive letter and rebuild its catalog (use if its location changed).</li>
+          <li><strong>Previews</strong> — generate the still previews for every image and video on
               this drive. It resumes where it left off and skips anything already made, so re-running is
-              fast. (Thumbnails are also created automatically after a scan and on demand as you browse.)</li>
-          <li><strong>Rename label</strong> — rename the drive inside Diskcorder only (the disk is untouched).</li>
+              fast. (Previews are also created automatically after a scan and on demand as you browse.)</li>
+          <li><strong>Rename</strong> — rename the drive inside Diskcorder only (the disk is untouched).</li>
           <li><strong>Export catalog</strong> — save this drive's catalog, <em>including its
-              thumbnails</em>, to a single <code>.json</code> file you can import on another laptop.
+              previews</em>, to a single <code>.json</code> file you can import on another laptop.
               (Hover-preview clips aren't bundled — they regenerate on demand.)</li>
-          <li><strong>Forget drive</strong> — remove the drive from Diskcorder. The disk and its files are untouched.</li>
+          <li><strong>Remove</strong> — remove the drive from Diskcorder. The disk and its files are untouched.</li>
         </ul>
 
-        <h3>Thumbnails &amp; previews</h3>
+        <h3>Previews</h3>
         <ul>
-          <li>Still thumbnails are taken from the <strong>first frame</strong> of a video (or the image itself).</li>
-          <li>Thumbnails generate <strong>automatically</strong> when a drive is connected (and after a
+          <li>Still previews are taken from the <strong>first frame</strong> of a video (or the image itself).</li>
+          <li>Previews generate <strong>automatically</strong> when a drive is connected (and after a
               scan); generation is resumable — it picks up where it left off and skips anything already
               made, so re-running is fast.</li>
           <li>Hover a video (in the list or the detail pane) to play its short preview clip.</li>
@@ -305,15 +305,15 @@
         <h3>Other views</h3>
         <ul>
           <li><strong>Files</strong> — switch between <em>Folders</em> (tree), <em>List</em> (flat
-              filenames + clickable locations), and <em>Gallery</em> (large thumbnails). Sort by name,
+              filenames + clickable locations), and <em>Gallery</em> (large previews). Sort by name,
               size, date, label, or tag. Use the <strong>folder tree in the left rail</strong> to jump
               to any folder. Long lists load more as you scroll.</li>
-          <li><strong>Starred</strong> — everything you've flagged (★ ❤ ● 🚩 ✅) on the open drive,
-              files and folders alike. Click the ☆ on any row, or right-click → flag.</li>
-          <li><strong>Large files</strong> — the biggest files on the drive, filterable by size and
+          <li><strong>Starred</strong> — everything you've flagged (❤ ● 🚩 ✅) on the open drive,
+              files and folders alike. Click the star on any row, or right-click → flag.</li>
+          <li><strong>Large Files</strong> — the biggest files on the drive, filterable by size and
               modified date, sortable, and optionally grouped by year — to find what's worth clearing
               or archiving.</li>
-          <li><strong>Space map</strong> — a treemap of what's using room on the drive.</li>
+          <li><strong>Space Map</strong> — a treemap of what's using room on the drive.</li>
           <li><strong>Duplicates</strong> — find identical files across one or all mapped drives.</li>
           <li><strong>Search</strong> — search names, notes, and labels across every drive (or just the open one).</li>
         </ul>

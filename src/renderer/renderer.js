@@ -191,9 +191,11 @@ async function refreshReachability() {
     renderVolDetail(card, id);
   });
   await refreshCoverage();
-  // Drives that just became connected: auto-sync (if enabled) then auto-thumbnail.
+  // Drives that just became connected: auto-sync (if enabled).
+  // NOTE: Auto-thumbnail generation removed to prevent crashes on new drives.
+  // Users should manually click 'Previews' button to generate thumbnails.
   const justConnected = state.volumes.filter(v => state.reachable[v.id] && !wasOnline[v.id]).map(v => v.id);
-  for (const id of justConnected) queueAutoThumbs(id);
+  // for (const id of justConnected) queueAutoThumbs(id);  // DISABLED - use manual Previews button
   if (justConnected.length) autoSyncConnected(justConnected);
 }
 
@@ -1816,9 +1818,8 @@ async function mapDrive(existingVol) {
     if (vol) await openVolume(vol);
     const skipNote = res.skipped ? ` (${res.skipped} unreadable item${res.skipped === 1 ? '' : 's'} skipped)` : '';
     toast((existingVol ? 'Drive relocated and updated.' : 'Drive mapped.') + skipNote);
-    // Kick off thumbnail generation in the background (stills only — hover
-    // preview clips are made on demand). Resumable and skips existing work.
-    if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);
+    // Auto-thumbnail generation disabled to prevent crashes on new drives.
+    // if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);
   } catch (err) {
     toast(err.message || 'Scan failed.', true);
   } finally {
@@ -1860,7 +1861,8 @@ async function syncDrive(v, auto = false) {
     toast(`Updated “${vol.name}” — ${(vol.file_count || 0).toLocaleString()} files (${deltaStr}).`);
     // Entry ids changed, so reopen at the root to avoid a stale breadcrumb trail.
     if (vol.id === state.activeVolumeId) await openVolume(vol);
-    if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);   // thumbnail any new media
+    // Auto-thumbnail generation disabled to prevent crashes.
+    // if (vol && state.ffmpegReady) queueAutoThumbs(vol.id);
   } catch (err) {
     toast(err.message || 'Update failed.', true);
   } finally {

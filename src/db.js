@@ -161,7 +161,7 @@ const replaceVolume = (() => {
       // caller remap the (entry-id-keyed) thumbnail cache to the new ids.
       const oldByPath = new Map();
       if (existingVolumeId) {
-        const old = db.prepare(`SELECT id, rel_path, note, alias, tags, size, mtime FROM entries WHERE volume_id = ?`)
+        const old = db.prepare(`SELECT id, rel_path, note, alias, tags, flag, size, mtime FROM entries WHERE volume_id = ?`)
           .all(existingVolumeId);
         for (const r of old) oldByPath.set(r.rel_path, r);
         db.prepare(`DELETE FROM entries WHERE volume_id = ?`).run(existingVolumeId);
@@ -174,7 +174,7 @@ const replaceVolume = (() => {
       }
 
       const stmt = insertEntry();
-      const updateAnnotations = db.prepare(`UPDATE entries SET note = ?, alias = ?, tags = ? WHERE id = ?`);
+      const updateAnnotations = db.prepare(`UPDATE entries SET note = ?, alias = ?, tags = ?, flag = ? WHERE id = ?`);
       const tempToReal = new Map();
       const idRemap = {};                 // old entry id -> new entry id (same rel_path)
       let totalBytes = 0;
@@ -198,8 +198,8 @@ const replaceVolume = (() => {
 
         const keep = oldByPath.get(r.relPath);
         if (keep) {
-          if (keep.note != null || keep.alias != null || keep.tags != null) {
-            updateAnnotations.run(keep.note, keep.alias, keep.tags, newId);
+          if (keep.note != null || keep.alias != null || keep.tags != null || keep.flag != null) {
+            updateAnnotations.run(keep.note, keep.alias, keep.tags, keep.flag, newId);
           }
           // Carry the cached thumbnail over only when the file is unchanged.
           // If it changed (same path, different size/mtime) leave it out, so the
@@ -292,18 +292,37 @@ function listFilesUnder(volumeId, parentId) {
   `).all({ v: volumeId, p: parentId ?? null });
 }
 
+// Every flagged (starred/hearted/…) entry on a volume, for the Starred tab.
+function listFlagged(volumeId) {
+  return db.prepare(`
+    SELECT id, parent_id, name, rel_path, is_dir, size, tree_size, mtime, ext, note, alias, tags, flag
+    FROM entries
+    WHERE volume_id = ? AND flag IS NOT NULL
+    ORDER BY flag, is_dir DESC, name COLLATE NOCASE
+    LIMIT 20000
+  `).all(volumeId);
+}
+
 // The folder chain from the volume root down to (and including) this entry,
 // so the UI can rebuild a breadcrumb / navigate to any folder by id.
 function getAncestry(id) {
   return db.prepare(`
-    WITH RECURSIVE up(id, parent_id, name, is_dir, lvl) AS (
-      SELECT id, parent_id, name, is_dir, 0 FROM entries WHERE id = ?
+    WITH RECURSIVE up(id, parent_id, name, is_dir, rel_path, lvl) AS (
+      SELECT id, parent_id, name, is_dir, rel_path, 0 FROM entries WHERE id = ?
       UNION ALL
-      SELECT e.id, e.parent_id, e.name, e.is_dir, up.lvl + 1
+      SELECT e.id, e.parent_id, e.name, e.is_dir, e.rel_path, up.lvl + 1
       FROM entries e JOIN up ON e.id = up.parent_id
     )
-    SELECT id, name, is_dir FROM up ORDER BY lvl DESC
+    SELECT id, name, is_dir, rel_path FROM up ORDER BY lvl DESC
   `).all(id);
+}
+
+// Resolve a folder by its relative path to its current entry id (used to
+// restore the last-open folder, even after a re-scan changed the ids).
+function resolveFolderPath(volumeId, relPath) {
+  const row = db.prepare(`SELECT id FROM entries WHERE volume_id = ? AND rel_path = ? AND is_dir = 1`)
+    .get(volumeId, relPath);
+  return row ? row.id : null;
 }
 
 // Largest files on a volume, with optional size/date filters. mtime is stored
@@ -430,6 +449,46 @@ function setFlag(id, flag) {
   db.prepare(`UPDATE entries SET flag = ? WHERE id = ?`).run(flag || null, id);
 }
 
+// Bulk-add one tag to many entries, merging with each entry's existing tags
+// (no duplicates), and record it in the vocabulary. Returns how many changed.
+function addTagToEntries(ids, tag) {
+  tag = String(tag || '').trim();
+  if (!tag || !Array.isArray(ids) || !ids.length) return 0;
+  let changed = 0;
+  const tx = db.transaction(() => {
+    const get = db.prepare(`SELECT tags FROM entries WHERE id = ?`);
+    const upd = db.prepare(`UPDATE entries SET tags = ? WHERE id = ?`);
+    for (const id of ids) {
+      const row = get.get(id);
+      if (!row) continue;
+      let arr = [];
+      try { const a = JSON.parse(row.tags || '[]'); if (Array.isArray(a)) arr = a; } catch { /* ignore bad tags */ }
+      if (arr.some(t => String(t).toLowerCase() === tag.toLowerCase())) continue;
+      arr.push(tag);
+      upd.run(JSON.stringify(arr), id);
+      changed++;
+    }
+    db.prepare(`
+      INSERT INTO tag_vocab (name, last_used) VALUES (?, ?)
+      ON CONFLICT(name) DO UPDATE SET last_used = excluded.last_used
+    `).run(tag, new Date().toISOString());
+  });
+  tx();
+  return changed;
+}
+
+// Bulk-set (flag truthy) or clear (flag null) the flag on many entries.
+function setFlagForEntries(ids, flag) {
+  if (!Array.isArray(ids) || !ids.length) return 0;
+  let n = 0;
+  const tx = db.transaction(() => {
+    const upd = db.prepare(`UPDATE entries SET flag = ? WHERE id = ?`);
+    for (const id of ids) n += upd.run(flag || null, id).changes;
+  });
+  tx();
+  return n;
+}
+
 function applyRealRename(id, newName, newRelPath) {
   db.prepare(`UPDATE entries SET name = ?, rel_path = ? WHERE id = ?`)
     .run(newName, newRelPath, id);
@@ -459,14 +518,28 @@ function escapeLike(s) {
 // Files that share an identical name + size with at least one other file
 // (a strong offline duplicate signal — content isn't hashed). Scans every
 // mapped drive by default, or a single volume when volumeId is given.
-function findDuplicates(volumeId) {
-  const scope = volumeId ? `AND volume_id = @v` : ``;
-  const outerScope = volumeId ? `WHERE e.volume_id = @v` : ``;
+// Find duplicate files (matched by name + size) across a chosen set of drives.
+//   volumeIds : drive ids to include; empty/omitted = every mapped drive.
+//   crossOnly : when true, only return sets whose copies span 2+ DIFFERENT
+//               drives (the "same file in several places" case), hiding
+//               duplicates that sit entirely within one drive.
+function findDuplicates(opts = {}) {
+  const ids = Array.isArray(opts.volumeIds)
+    ? opts.volumeIds.filter(Number.isInteger)
+    : (Number.isInteger(opts) ? [opts] : []);   // tolerate a bare id for callers
+  const crossOnly = !!opts.crossOnly;
+  const inList = ids.length ? `(${ids.map(() => '?').join(',')})` : ``;
+  const innerScope = ids.length ? `AND volume_id IN ${inList}` : ``;
+  const outerScope = ids.length ? `WHERE e.volume_id IN ${inList}` : ``;
+  const having = crossOnly
+    ? `HAVING COUNT(*) > 1 AND COUNT(DISTINCT volume_id) > 1`
+    : `HAVING COUNT(*) > 1`;
+  const params = ids.length ? [...ids, ...ids] : [];
   return db.prepare(`
     WITH dups AS (
       SELECT name, size FROM entries
-      WHERE is_dir = 0 AND size > 0 ${scope}
-      GROUP BY name, size HAVING COUNT(*) > 1
+      WHERE is_dir = 0 AND size > 0 ${innerScope}
+      GROUP BY name, size ${having}
     )
     SELECT e.id, e.name, e.size, e.ext, e.mtime, e.volume_id, e.rel_path, v.name AS volume_name
     FROM entries e
@@ -475,7 +548,7 @@ function findDuplicates(volumeId) {
     ${outerScope}
     ORDER BY e.size DESC, e.name COLLATE NOCASE, v.name COLLATE NOCASE
     LIMIT 5000
-  `).all({ v: volumeId || null });
+  `).all(...params);
 }
 
 // Remove an entry and all of its descendants (used after a successful move).
@@ -512,8 +585,8 @@ function search(term, volumeId) {
 module.exports = {
   init, close,
   listVolumes, getVolume, deleteVolume, renameVolume, setVolumeIcon, replaceVolume,
-  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, listFilesUnder, getAncestry, findDuplicates,
+  getChildren, getTreemap, getEntry, getMediaEntries, countMediaEntries, getLargeFiles, listFiles, listFilesUnder, listFlagged, getAncestry, resolveFolderPath, findDuplicates,
   exportVolume, importVolume,
-  setNote, setAlias, setFlag, setTags, listTags,
+  setNote, setAlias, setFlag, setTags, listTags, addTagToEntries, setFlagForEntries,
   applyRealRename, applyFolderRename, deleteEntrySubtree, search
 };

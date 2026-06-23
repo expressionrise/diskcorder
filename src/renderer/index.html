@@ -36,12 +36,7 @@
     </div>
     <button id="import-drive" class="btn btn-ghost" title="Import a drive catalog (.json)">Import</button>
     <button id="map-drive" class="btn btn-primary">Map a drive</button>
-    <select id="theme-select" class="theme-select" title="Color theme" aria-label="Color theme">
-      <option value="dark">Gold dark</option>
-      <option value="blue">GitHub dark</option>
-      <option value="dim">Dim</option>
-      <option value="light">Light</option>
-    </select>
+    <button id="theme-btn" class="btn btn-ghost theme-btn" title="Click to switch color theme">Golden Dark</button>
     <button id="info-btn" class="btn btn-ghost info-btn" title="About Diskcorder — what it does and how to use it" aria-label="Info">?</button>
   </header>
 
@@ -61,6 +56,7 @@
     <section class="browser">
       <div class="tabbar">
         <button id="tab-files" class="tab active">Files</button>
+        <button id="tab-starred" class="tab">★ Starred</button>
         <button id="tab-large" class="tab">Large files</button>
         <button id="tab-space" class="tab">Space map</button>
         <button id="tab-dupes" class="tab">Duplicates</button>
@@ -82,16 +78,34 @@
                 <option value="size">Size</option>
                 <option value="date">Date</option>
                 <option value="type">Type</option>
+                <option value="video">Videos first</option>
+                <option value="image">Images first</option>
                 <option value="flag">Symbol</option>
                 <option value="label">Label</option>
                 <option value="tag">Tag</option>
               </select>
             </label>
             <button id="file-sort-dir" class="btn btn-ghost mini-btn" title="Ascending / descending">↑</button>
+            <button id="file-select-toggle" class="btn btn-ghost mini-btn"
+                    title="Select multiple files, then tag or flag them all at once">Select</button>
           </div>
+        </div>
+        <div id="bulk-bar" class="bulk-bar hidden">
+          <span id="bulk-count" class="bulk-count">0 selected</span>
+          <span class="bulk-spacer"></span>
+          <input id="bulk-tag-input" class="field bulk-tag" list="tag-vocab" autocomplete="off"
+                 placeholder="Tag selected…" />
+          <button id="bulk-tag-add" class="btn mini-btn" disabled>Add tag</button>
+          <div id="bulk-flags" class="bulk-flags"></div>
+          <button id="bulk-clear" class="btn btn-ghost mini-btn" disabled>Clear</button>
         </div>
         <div id="listing" class="listing"></div>
         <div id="listing-empty" class="listing-empty hidden">Select a drive to start browsing.</div>
+      </div>
+
+      <div id="view-starred" class="view hidden">
+        <div class="starred-head"><span id="starred-summary"></span></div>
+        <div id="starred-list" class="listing"></div>
       </div>
 
       <div id="view-large" class="view hidden">
@@ -147,12 +161,13 @@
         <div class="dupes-head">
           <span id="dupes-summary">Scanning for duplicates…</span>
           <div class="dupes-controls">
-            <label class="scope" title="Check every mapped drive, or just the open one">
-              <input id="dupes-all" type="checkbox" checked /> all mapped drives
+            <label class="scope" title="Only show files that exist on 2 or more different drives">
+              <input id="dupes-cross" type="checkbox" /> across drives only
             </label>
             <button id="dupes-refresh" class="btn btn-ghost mini-btn">Refresh</button>
           </div>
         </div>
+        <div id="dupes-drives" class="dupes-drives" title="Pick which mapped drives to compare"></div>
         <div id="dupes-actions" class="dupes-actions hidden">
           <span id="dupes-selcount" class="dupes-selcount">0 selected</span>
           <span class="dupes-actions-spacer"></span>
@@ -202,8 +217,11 @@
 
         <label class="field-label" for="tag-input">Tags</label>
         <div id="tags-box" class="tags-box"></div>
-        <input id="tag-input" class="field" list="tag-vocab" autocomplete="off"
-               placeholder="Add a tag, press Enter — past tags autocomplete" />
+        <div class="tag-add-row">
+          <input id="tag-input" class="field" list="tag-vocab" autocomplete="off"
+                 placeholder="Add a tag — past tags autocomplete" />
+          <button id="tag-add" class="btn" type="button">Add</button>
+        </div>
         <datalist id="tag-vocab"></datalist>
 
         <label class="field-label">Transfer</label>
@@ -290,6 +308,8 @@
               filenames + clickable locations), and <em>Gallery</em> (large thumbnails). Sort by name,
               size, date, label, or tag. Use the <strong>folder tree in the left rail</strong> to jump
               to any folder. Long lists load more as you scroll.</li>
+          <li><strong>Starred</strong> — everything you've flagged (★ ❤ ● 🚩 ✅) on the open drive,
+              files and folders alike. Click the ☆ on any row, or right-click → flag.</li>
           <li><strong>Large files</strong> — the biggest files on the drive, filterable by size and
               modified date, sortable, and optionally grouped by year — to find what's worth clearing
               or archiving.</li>

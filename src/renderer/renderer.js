@@ -63,6 +63,7 @@ const ICON = {
   trash:   svg('<path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/>'),
   play:    svg('<path d="M7 5v14l11-7z"/>'),
   film:    svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>'),
+  search:  svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'),
   cancel:  svg('<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>')
 };
 
@@ -126,6 +127,10 @@ const state = {
   tmItems: [],            // current level's rows
   tmTiles: []             // laid-out rectangles for hit-testing
 };
+
+// Multi-select for bulk tag/flag in the Files view.
+let multiMode = false;          // when on, clicking files ticks them instead of opening them
+const multiSel = new Set();     // entry ids currently ticked for bulk actions
 
 // ---- drives rail ---------------------------------------------------------
 
@@ -435,7 +440,7 @@ function clearBrowser() {
 
 async function openVolume(v) {
   state.activeVolumeId = v.id;
-  state.trail = [{ id: null, name: v.name }];
+  state.trail = [{ id: null, name: v.name, rel: '' }];
   state.tmTrail = [{ id: null, name: v.name }];
   state.searching = false;
   $('search-input').value = '';
@@ -445,11 +450,76 @@ async function openVolume(v) {
   await loadListing();
   if (state.tab === 'space') await tmLoadLevel(null);
   else if (state.tab === 'large') await loadLargeFiles();
+  else if (state.tab === 'starred') await loadStarred();
+  saveSession();
+}
+
+// All flagged items on the active drive, for the Starred tab.
+async function loadStarred() {
+  const list = $('starred-list');
+  const sum = $('starred-summary');
+  if (list._lazyScroll) { list.removeEventListener('scroll', list._lazyScroll); list._lazyScroll = null; }
+  if (state.activeVolumeId == null) {
+    list.innerHTML = '';
+    sum.textContent = 'Open a drive to see its starred items.';
+    return;
+  }
+  const rows = await api.flaggedItems(state.activeVolumeId).catch(() => []);
+  if (!rows.length) {
+    list.innerHTML = '<div class="listing-empty">No starred items yet. Click the ☆ on a file or folder (or right-click → flag) to star it.</div>';
+    sum.textContent = '0 starred';
+    return;
+  }
+  sum.textContent = `${rows.length.toLocaleString()} starred item${rows.length === 1 ? '' : 's'}`;
+  lazyRender(list, rows, (r) => makeFileRow(r, false, true));
+}
+
+// ---- session memory: last drive, folder, view, and tab -------------------
+
+function saveSession() {
+  try {
+    const tail = state.trail[state.trail.length - 1] || {};
+    localStorage.setItem('diskcorder-session', JSON.stringify({
+      volumeId: state.activeVolumeId,
+      folderPath: tail.rel || '',
+      fileView: state.fileView,
+      tab: state.tab
+    }));
+  } catch { /* ignore */ }
+}
+
+async function restoreSession() {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('diskcorder-session') || 'null'); } catch { s = null; }
+  if (!s || s.volumeId == null) return;
+  const vol = state.volumes.find(v => v.id === s.volumeId);
+  if (!vol) return;
+
+  state.activeVolumeId = vol.id;
+  state.fileView = ['folders', 'list', 'gallery'].includes(s.fileView) ? s.fileView : 'folders';
+  updateViewToggle();
+  state.trail = [{ id: null, name: vol.name, rel: '' }];
+  state.tmTrail = [{ id: null, name: vol.name }];
+  renderRail();
+  loadFolderTree();
+  refreshCacheSize(vol.id);
+
+  // Resolve the saved folder by PATH (robust across re-scans that change ids).
+  if (s.folderPath) {
+    const fid = await api.resolvePath(vol.id, s.folderPath).catch(() => null);
+    if (fid) {
+      const chain = await api.ancestry(fid).catch(() => []);
+      for (const c of chain) if (c.is_dir) state.trail.push({ id: c.id, name: c.name, rel: c.rel_path });
+    }
+  }
+  await loadListing();
+  if (s.tab && s.tab !== 'files' && $('tab-' + s.tab)) switchTab(s.tab);
 }
 
 async function loadListing() {
   if (state.activeVolumeId == null) { clearBrowser(); return; }
   $('listing-empty').classList.add('hidden');
+  saveSession();
 
   const parent = state.trail[state.trail.length - 1];
 
@@ -506,6 +576,18 @@ function sortEntries(rows, foldersFirst) {
         r = ta.localeCompare(tb);
         break;
       }
+      case 'video': {
+        const va = !a.is_dir && isVideoExt(a.ext), vb = !b.is_dir && isVideoExt(b.ext);
+        if (va !== vb) return va ? -1 : 1;              // videos first, both directions
+        r = nameOf(a).localeCompare(nameOf(b));
+        break;
+      }
+      case 'image': {
+        const ia = !a.is_dir && isImageExt(a.ext), ib = !b.is_dir && isImageExt(b.ext);
+        if (ia !== ib) return ia ? -1 : 1;              // images first, both directions
+        r = nameOf(a).localeCompare(nameOf(b));
+        break;
+      }
       default: r = nameOf(a).localeCompare(nameOf(b));
     }
     if (r === 0) r = nameOf(a).localeCompare(nameOf(b));
@@ -516,6 +598,22 @@ function sortEntries(rows, foldersFirst) {
 function parseTagList(tagsJson) {
   if (!tagsJson) return [];
   try { const a = JSON.parse(tagsJson); return Array.isArray(a) ? a : []; } catch { return []; }
+}
+
+// Append a row of tag chips to a list/gallery item's label, so tags are
+// visible without opening the detail pane.
+function appendTagChips(label, r) {
+  const tags = parseTagList(r.tags);
+  if (!tags.length) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'row-tags';
+  for (const t of tags) {
+    const chip = document.createElement('span');
+    chip.className = 'row-tag';
+    chip.textContent = t;
+    wrap.appendChild(chip);
+  }
+  label.appendChild(wrap);
 }
 
 // Files-view controls: Folders / List / Gallery toggle + sort key + direction.
@@ -537,10 +635,10 @@ document.querySelectorAll('#file-view-toggle .seg-btn').forEach(btn => {
 async function navigateToFolder(folderId) {
   if (state.activeVolumeId == null) return;
   const drive = state.volumes.find(v => v.id === state.activeVolumeId);
-  const trail = [{ id: null, name: drive ? drive.name : 'Drive' }];
+  const trail = [{ id: null, name: drive ? drive.name : 'Drive', rel: '' }];
   if (folderId != null) {
     const chain = await api.ancestry(folderId).catch(() => []);
-    for (const c of chain) if (c.is_dir) trail.push({ id: c.id, name: c.name });
+    for (const c of chain) if (c.is_dir) trail.push({ id: c.id, name: c.name, rel: c.rel_path });
   }
   state.trail = trail;
   state.searching = false;
@@ -585,23 +683,44 @@ function buildTreeNode(folder, depth) {
   kidsWrap.className = 'tree-children hidden';
   kidsWrap.style.marginLeft = '10px';        // indent nested tiles as a group
   let loaded = false, open = false;
-  tog.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    open = !open;
-    tog.textContent = open ? '▼' : '▶';
-    kidsWrap.classList.toggle('hidden', !open);
-    if (open && !loaded) {
+  // Open the node (loading children once); resolves when children are in the DOM.
+  async function ensureOpen() {
+    if (!open) { open = true; tog.textContent = '▼'; kidsWrap.classList.remove('hidden'); }
+    if (!loaded) {
       loaded = true;
       const kids = (await api.getChildren(state.activeVolumeId, folder.id)).filter(k => k.is_dir);
       if (!kids.length) { tog.textContent = ''; tog.classList.add('leaf'); }
       for (const k of kids) kidsWrap.appendChild(buildTreeNode(k, depth + 1));
     }
+  }
+  row._ensureOpen = ensureOpen;     // used by revealTree to expand to a folder
+  tog.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (open) { open = false; tog.textContent = '▶'; kidsWrap.classList.add('hidden'); }
+    else await ensureOpen();
   });
   // The whole row navigates; the toggle (which stops propagation) only expands.
   row.addEventListener('click', () => navigateToFolder(folder.id));
 
   node.append(row, kidsWrap);
   return node;
+}
+
+// Expand the rail folder tree down to the folder containing an entry, and
+// highlight it — so selecting a file in any view shows where it lives.
+async function revealTree(entryId) {
+  if (state.activeVolumeId == null) return;
+  const chain = (await api.ancestry(entryId).catch(() => [])).filter(c => c.is_dir);
+  if (!chain.length) { highlightTreeNode(null); return; }
+  for (let i = 0; i < chain.length; i++) {
+    const row = document.querySelector(`.folder-tree .tree-row[data-id="${chain[i].id}"]`);
+    if (!row) return;                       // tree not loaded that far — give up quietly
+    if (i < chain.length - 1 && row._ensureOpen) await row._ensureOpen();
+  }
+  const deepest = chain[chain.length - 1];
+  highlightTreeNode(deepest.id);
+  const r = document.querySelector(`.folder-tree .tree-row[data-id="${deepest.id}"]`);
+  if (r) r.scrollIntoView({ block: 'nearest' });
 }
 
 function highlightTreeNode(folderId) {
@@ -736,18 +855,27 @@ function makeFileRow(r, asSearch, showPath) {
     }
     label.appendChild(sub);
   }
+  appendTagChips(label, r);
 
   const sz = document.createElement('span');
   sz.className = 'sz';
   sz.textContent = r.is_dir ? humanFileSize(r.tree_size) : humanFileSize(r.size);
   if (r.is_dir) sz.classList.add('sz-dir');
 
-  row.append(flag, icon, label, sz);
-  row.addEventListener('click', () => selectEntry(r.id));
+  if (multiMode) {
+    row.classList.toggle('multi-selected', multiSel.has(r.id));
+    row.append(makeMultiCheck(r, row), flag, icon, label, sz);
+  } else {
+    row.append(flag, icon, label, sz);
+  }
+  row.addEventListener('click', () => {
+    if (multiMode) setMultiSelected(r.id, !multiSel.has(r.id), row);
+    else selectEntry(r.id);
+  });
   row.addEventListener('contextmenu', (e) => openContextMenu(e, r, asSearch));
   if (r.is_dir && !asSearch && !showPath) {
     row.addEventListener('dblclick', () => {
-      state.trail.push({ id: r.id, name: r.alias || r.name });
+      state.trail.push({ id: r.id, name: r.alias || r.name, rel: r.rel_path });
       loadListing();
     });
   }
@@ -803,6 +931,7 @@ async function setRowFlag(r, flag, cell) {
     c.textContent = flag || '☆'; c.classList.toggle('flagged', !!flag);
   });
   if (state.selectedEntry && state.selectedEntry.id === r.id) state.selectedEntry.flag = r.flag;
+  if (state.tab === 'starred') loadStarred();   // keep the Starred tab in sync
 }
 
 // ---- right-click context menu (file rows in any view) --------------------
@@ -840,7 +969,16 @@ function openContextMenu(e, r, asSearch) {
   const sep = () => { const s = document.createElement('div'); s.className = 'ctx-sep'; menu.appendChild(s); };
 
   item('Details / preview', () => selectEntry(r.id));
-  if (!r.is_dir) item('Test for damage', async () => { await selectEntry(r.id); $('test-file').click(); });
+  if (!r.is_dir) {
+    item('Open', async () => {
+      const res = await api.openFile(r.id);
+      if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the file.', true);
+    });
+    item('Open with…', async () => {
+      const res = await api.openFileWith(r.id);
+      if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the file.', true);
+    });
+  }
   item('Open file location', async () => {
     const res = await api.revealInExplorer(r.id);
     if (!res || !res.ok) toast(res && res.error ? res.error : 'Could not open the location.', true);
@@ -913,13 +1051,22 @@ function renderGallery(rows) {
     sub.title = 'Open this folder';
     sub.addEventListener('click', (e) => { e.stopPropagation(); navigateToFolder(r.parent_id ?? null); });
     label.append(nm, sub);
+    appendTagChips(label, r);
 
     const sz = document.createElement('span');
     sz.className = 'sz';
     sz.textContent = humanFileSize(r.size);
 
-    row.append(flag, thumb, label, sz);
-    row.addEventListener('click', () => selectEntry(r.id));
+    if (multiMode) {
+      row.classList.toggle('multi-selected', multiSel.has(r.id));
+      row.append(makeMultiCheck(r, row), flag, thumb, label, sz);
+    } else {
+      row.append(flag, thumb, label, sz);
+    }
+    row.addEventListener('click', () => {
+      if (multiMode) setMultiSelected(r.id, !multiSel.has(r.id), row);
+      else selectEntry(r.id);
+    });
     row.addEventListener('contextmenu', (e) => openContextMenu(e, r, false));
     return row;
   });
@@ -1019,6 +1166,7 @@ async function selectEntry(id) {
   state.selectedEntry = entry;
   markSelectedRow(id);
   renderDetail(entry);
+  if (entry.volume_id === state.activeVolumeId) revealTree(id);  // reveal in the rail tree
 }
 
 function renderDetail(entry) {
@@ -1117,16 +1265,140 @@ async function loadTagVocab() {
   }
 }
 
+function commitTagInput() {
+  const input = $('tag-input');
+  const val = input.value;
+  if (!val.trim()) return;
+  addTag(val);
+  input.value = '';
+  input.focus();
+}
+
 $('tag-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    addTag(e.target.value);
-    e.target.value = '';
+    commitTagInput();
   }
 });
+$('tag-add').addEventListener('click', commitTagInput);
+
+// ---- multi-select (bulk tag / flag) --------------------------------------
+
+// A selection checkbox for a file row / gallery card while in Select mode.
+function makeMultiCheck(r, rowEl) {
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'multi-check';
+  cb.checked = multiSel.has(r.id);
+  cb.addEventListener('click', (e) => e.stopPropagation());
+  cb.addEventListener('change', () => setMultiSelected(r.id, cb.checked, rowEl));
+  return cb;
+}
+
+function setMultiSelected(id, on, rowEl) {
+  if (on) multiSel.add(id); else multiSel.delete(id);
+  if (rowEl) {
+    rowEl.classList.toggle('multi-selected', on);
+    const cb = rowEl.querySelector('.multi-check');
+    if (cb) cb.checked = on;
+  }
+  updateBulkBar();
+}
+
+function clearMultiSel() {
+  multiSel.clear();
+  document.querySelectorAll('.row.multi-selected, .grow.multi-selected')
+    .forEach(el => el.classList.remove('multi-selected'));
+  document.querySelectorAll('.multi-check').forEach(cb => { cb.checked = false; });
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const n = multiSel.size;
+  $('bulk-count').textContent = `${n} selected`;
+  const off = n === 0;
+  $('bulk-tag-add').disabled = off;
+  $('bulk-clear').disabled = off;
+  document.querySelectorAll('#bulk-flags .bulk-flag').forEach(b => { b.disabled = off; });
+}
+
+function toggleMultiMode() {
+  multiMode = !multiMode;
+  $('file-select-toggle').classList.toggle('active', multiMode);
+  $('bulk-bar').classList.toggle('hidden', !multiMode);
+  if (!multiMode) multiSel.clear();
+  updateBulkBar();
+  loadListing();   // re-render rows with / without checkboxes
+}
+
+// Build the flag buttons in the bulk bar (FLAG_EMOJIS is defined above).
+function renderBulkFlags() {
+  const box = $('bulk-flags');
+  box.innerHTML = '';
+  for (const emo of FLAG_EMOJIS) {
+    const b = document.createElement('button');
+    b.className = 'bulk-flag'; b.textContent = emo; b.disabled = true;
+    b.title = `Flag selected with ${emo}`;
+    b.addEventListener('click', () => bulkSetFlag(emo));
+    box.appendChild(b);
+  }
+  const clr = document.createElement('button');
+  clr.className = 'bulk-flag'; clr.textContent = '☆'; clr.disabled = true;
+  clr.title = 'Clear flag on selected';
+  clr.addEventListener('click', () => bulkSetFlag(null));
+  box.appendChild(clr);
+}
+
+async function bulkAddTag() {
+  const input = $('bulk-tag-input');
+  const tag = input.value.trim();
+  if (!tag || multiSel.size === 0) return;
+  const ids = [...multiSel];
+  let changed = 0;
+  try { changed = await api.addTagBulk(ids, tag); }
+  catch (e) { toast('Failed to add tag: ' + (e.message || e), true); return; }
+  input.value = '';
+  await loadTagVocab();
+  toast(`Tagged ${changed} file${changed === 1 ? '' : 's'} “${tag}”.`);
+  await refreshAfterBulk(ids);
+}
+
+async function bulkSetFlag(flag) {
+  if (multiSel.size === 0) return;
+  const ids = [...multiSel];
+  try { await api.setFlagBulk(ids, flag); }
+  catch (e) { toast('Failed to set flag: ' + (e.message || e), true); return; }
+  const n = ids.length;
+  toast(flag ? `Flagged ${n} file${n === 1 ? '' : 's'}.` : `Cleared flag on ${n} file${n === 1 ? '' : 's'}.`);
+  await refreshAfterBulk(ids);
+}
+
+// Re-render the listing so new tags/flags show; keep the selection so the user
+// can apply several tags/flags in a row.
+async function refreshAfterBulk(ids) {
+  await loadListing();
+  if (state.selectedEntry && ids.includes(state.selectedEntry.id)) {
+    await selectEntry(state.selectedEntry.id);
+  }
+}
+
+$('file-select-toggle').addEventListener('click', toggleMultiMode);
+$('bulk-clear').addEventListener('click', clearMultiSel);
+$('bulk-tag-add').addEventListener('click', bulkAddTag);
+$('bulk-tag-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); bulkAddTag(); }
+});
+renderBulkFlags();
 
 // Media preview in the detail pane. Videos: big thumbnail that plays the ~10s
 // clip on hover. Images: just the thumbnail.
+let mediaZoom = (() => { try { return Math.min(3, Math.max(1, parseFloat(localStorage.getItem('diskcorder-mediazoom')) || 1)); } catch { return 1; } })();
+function setMediaZoom(z) {
+  mediaZoom = Math.max(1, Math.min(3, Math.round(z * 100) / 100));
+  try { localStorage.setItem('diskcorder-mediazoom', String(mediaZoom)); } catch { /* ignore */ }
+  $('detail-media').style.setProperty('--media-zoom', mediaZoom);
+}
+
 function renderMedia(entry) {
   const box = $('detail-media');
   box.innerHTML = '';
@@ -1134,6 +1406,19 @@ function renderMedia(entry) {
   const image = !entry.is_dir && isImageExt(entry.ext);
   if (!video && !image) { box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
+
+  // Zoom control (DaVinci-style magnifier − / +) to enlarge the preview.
+  const zoomBar = document.createElement('div');
+  zoomBar.className = 'media-zoom';
+  const mag = document.createElement('span'); mag.className = 'media-zoom-ic'; mag.innerHTML = ICON.search;
+  const zOut = document.createElement('button'); zOut.className = 'media-zoom-btn'; zOut.textContent = '−'; zOut.title = 'Smaller preview';
+  const zIn = document.createElement('button'); zIn.className = 'media-zoom-btn'; zIn.textContent = '+'; zIn.title = 'Larger preview';
+  zoomBar.append(mag, zOut, zIn);
+  const applyZoom = () => box.style.setProperty('--media-zoom', mediaZoom);
+  zOut.addEventListener('click', () => { setMediaZoom(mediaZoom - 0.25); });
+  zIn.addEventListener('click', () => { setMediaZoom(mediaZoom + 0.25); });
+  box.appendChild(zoomBar);
+  applyZoom();
 
   const frame = document.createElement('div');
   frame.className = 'media-frame';
@@ -2115,6 +2400,7 @@ function transferModal({ entry, targets, move }) {
 // ---- tabs: Files | Space map ---------------------------------------------
 
 $('tab-files').addEventListener('click', () => switchTab('files'));
+$('tab-starred').addEventListener('click', () => switchTab('starred'));
 $('tab-large').addEventListener('click', () => switchTab('large'));
 $('tab-space').addEventListener('click', () => switchTab('space'));
 $('tab-dupes').addEventListener('click', () => switchTab('dupes'));
@@ -2123,10 +2409,12 @@ $('tab-backup').addEventListener('click', () => switchTab('backup'));
 function switchTab(tab) {
   if (state.tab === tab) return;
   state.tab = tab;
-  for (const t of ['files', 'large', 'space', 'dupes', 'backup']) {
+  for (const t of ['files', 'starred', 'large', 'space', 'dupes', 'backup']) {
     $('tab-' + t).classList.toggle('active', tab === t);
     $('view-' + t).classList.toggle('hidden', tab !== t);
   }
+  saveSession();
+  if (tab === 'starred') loadStarred();
   if (tab === 'backup') loadBackupTab();
   if (tab === 'space') {
     if (!state.tmTrail.length && state.activeVolumeId != null) {
@@ -2135,6 +2423,7 @@ function switchTab(tab) {
     }
     tmLoadLevel(state.tmTrail.length ? state.tmTrail[state.tmTrail.length - 1].id : null);
   } else if (tab === 'dupes') {
+    renderDupeDrivePicker();
     loadDuplicates();
   } else if (tab === 'large') {
     loadLargeFiles();
@@ -2290,9 +2579,40 @@ function buildLargeRow(r, rank) {
 
 const dupeSel = new Set();      // ids of copies ticked for bulk deletion
 const dupeById = new Map();     // id -> copy row (for size totals + deletion)
+const dupeDrives = new Set();   // volume ids to compare; empty = none picked
 
 $('dupes-refresh').addEventListener('click', loadDuplicates);
-$('dupes-all').addEventListener('change', loadDuplicates);
+$('dupes-cross').addEventListener('change', loadDuplicates);
+
+// Drive picker for the Duplicates tab: one toggle per mapped drive, so you can
+// compare any 2+ drives. Defaults to all drives selected.
+function renderDupeDrivePicker() {
+  const box = $('dupes-drives');
+  box.innerHTML = '';
+  const vols = state.volumes;
+  const known = new Set(vols.map(v => v.id));
+  for (const id of [...dupeDrives]) if (!known.has(id)) dupeDrives.delete(id);
+  if (dupeDrives.size === 0) for (const v of vols) dupeDrives.add(v.id);  // default: all
+
+  box.classList.toggle('hidden', !vols.length);
+  for (const v of vols) {
+    const chip = document.createElement('label');
+    chip.className = 'dupe-drive' + (dupeDrives.has(v.id) ? ' on' : '') + (state.reachable[v.id] ? '' : ' offline');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = dupeDrives.has(v.id);
+    cb.addEventListener('change', () => {
+      if (cb.checked) dupeDrives.add(v.id); else dupeDrives.delete(v.id);
+      chip.classList.toggle('on', cb.checked);
+      loadDuplicates();
+    });
+    const nm = document.createElement('span');
+    nm.textContent = (v.icon ? v.icon + ' ' : '') + v.name;
+    if (!state.reachable[v.id]) chip.title = 'Offline — copies here can be listed but not deleted';
+    chip.append(cb, nm);
+    box.appendChild(chip);
+  }
+}
 $('dupes-clear').addEventListener('click', clearDupeSelection);
 $('dupes-keep-newest').addEventListener('click', () => selectAllBut('newest'));
 $('dupes-keep-oldest').addEventListener('click', () => selectAllBut('oldest'));
@@ -2300,12 +2620,18 @@ $('dupes-delete-sel').addEventListener('click', deleteSelectedDuplicates);
 
 async function loadDuplicates() {
   const list = $('dupes-list');
-  const allDrives = $('dupes-all').checked;
-  const scope = allDrives ? null : state.activeVolumeId;
+  const crossOnly = $('dupes-cross').checked;
+  const volumeIds = [...dupeDrives];
   dupeSel.clear();
   dupeById.clear();
-  if (!allDrives && scope == null) {
-    $('dupes-summary').textContent = 'Open a drive first, or tick “all mapped drives”.';
+  if (volumeIds.length === 0) {
+    $('dupes-summary').textContent = 'Pick at least one drive to scan.';
+    list.innerHTML = '';
+    $('dupes-actions').classList.add('hidden');
+    return;
+  }
+  if (crossOnly && volumeIds.length < 2) {
+    $('dupes-summary').textContent = 'Pick 2 or more drives to compare across drives.';
     list.innerHTML = '';
     $('dupes-actions').classList.add('hidden');
     return;
@@ -2313,7 +2639,7 @@ async function loadDuplicates() {
   $('dupes-summary').textContent = 'Scanning for duplicates…';
   list.innerHTML = '';
   let rows;
-  try { rows = await api.findDuplicates(scope); }
+  try { rows = await api.findDuplicates({ volumeIds, crossOnly }); }
   catch (e) { $('dupes-summary').textContent = 'Failed: ' + (e.message || e); return; }
 
   // group by name + size
@@ -2326,7 +2652,9 @@ async function loadDuplicates() {
   const list2 = [...groups.values()].filter(g => g.items.length > 1);
   // reclaimable = every copy beyond the first, summed
   const wasted = list2.reduce((s, g) => s + g.size * (g.items.length - 1), 0);
-  const where = allDrives ? 'across all drives' : 'on this drive';
+  const allVols = volumeIds.length === state.volumes.length;
+  const where = crossOnly ? 'across drives'
+    : (allVols ? 'across all drives' : `across ${volumeIds.length} drive${volumeIds.length === 1 ? '' : 's'}`);
   $('dupes-summary').textContent = list2.length
     ? `${list2.length} duplicate set${list2.length === 1 ? '' : 's'} ${where} · up to ${humanFileSize(wasted)} reclaimable`
     : `No duplicates found ${where} (matched by name + size).`;
@@ -2721,16 +3049,25 @@ function tmRenderLegend() {
 
 // ---- color theme ---------------------------------------------------------
 
-const THEME_CLASS = { dark: '', blue: 'theme-blue', dim: 'theme-dim', light: 'theme-light' };
-function applyTheme(name) {
-  if (!(name in THEME_CLASS)) name = 'dark';
+const THEMES = [
+  { key: 'dark',  cls: '',            name: 'Golden Dark' },
+  { key: 'blue',  cls: 'theme-blue',  name: 'GitHub Dark' },
+  { key: 'dim',   cls: 'theme-dim',   name: 'GitHub Dim' },
+  { key: 'light', cls: 'theme-light', name: 'GitHub Light' }
+];
+function applyTheme(key) {
+  const t = THEMES.find(x => x.key === key) || THEMES[0];
   document.body.classList.remove('theme-blue', 'theme-dim', 'theme-light');
-  if (THEME_CLASS[name]) document.body.classList.add(THEME_CLASS[name]);
-  try { localStorage.setItem('diskcorder-theme', name); } catch { /* ignore */ }
-  const sel = $('theme-select');
-  if (sel && sel.value !== name) sel.value = name;
+  if (t.cls) document.body.classList.add(t.cls);
+  try { localStorage.setItem('diskcorder-theme', t.key); } catch { /* ignore */ }
+  const btn = $('theme-btn');
+  if (btn) { btn.textContent = t.name; btn.dataset.key = t.key; }
 }
-$('theme-select').addEventListener('change', (e) => applyTheme(e.target.value));
+$('theme-btn').addEventListener('click', () => {
+  const cur = $('theme-btn').dataset.key || 'dark';
+  const i = THEMES.findIndex(x => x.key === cur);
+  applyTheme(THEMES[(i + 1) % THEMES.length].key);
+});
 applyTheme((() => { try { return localStorage.getItem('diskcorder-theme') || 'dark'; } catch { return 'dark'; } })());
 
 // ---- boot ----------------------------------------------------------------
@@ -2740,6 +3077,7 @@ applyTheme((() => { try { return localStorage.getItem('diskcorder-theme') || 'da
   try { state.ffmpegReady = await api.ffmpegReady(); } catch { state.ffmpegReady = false; }
   await loadTagVocab();
   await loadRail();
+  await restoreSession();   // reopen the last drive + folder + tab + view
 })().catch(err => toast(err.message || 'Failed to load drives.', true));
 
 // Re-check which drives are plugged in when the window regains focus.

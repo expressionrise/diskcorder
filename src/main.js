@@ -9,6 +9,7 @@ const scanner = require('./scanner');
 const thumbs = require('./thumbs');
 const transfer = require('./transfer');
 const backup = require('./backup');
+const { spawn } = require('child_process');
 
 let win = null;
 
@@ -260,6 +261,9 @@ ipcMain.handle('entries:search', (_e, term, volumeId) =>
 ipcMain.handle('entries:list', (_e, volumeId) => db.listFiles(assertInt(volumeId)));
 ipcMain.handle('entries:listUnder', (_e, volumeId, parentId) =>
   db.listFilesUnder(assertInt(volumeId), parentId == null ? null : assertInt(parentId, 'parentId')));
+ipcMain.handle('entries:flagged', (_e, volumeId) => db.listFlagged(assertInt(volumeId)));
+ipcMain.handle('entries:resolvePath', (_e, volumeId, relPath) =>
+  db.resolveFolderPath(assertInt(volumeId), assertStr(relPath, 'relPath', 4096)));
 ipcMain.handle('entries:ancestry', (_e, id) => db.getAncestry(assertInt(id)));
 ipcMain.handle('entries:large', (_e, volumeId, opts) => {
   assertInt(volumeId);
@@ -413,24 +417,55 @@ ipcMain.handle('entries:realDelete', async (_e, id) => {
 
 // ---- IPC: reveal in Explorer ---------------------------------------------
 
+// Resolve an entry's real on-disk path, or null if the drive/file isn't there.
+function realPathFor(id) {
+  const entry = db.getEntry(id);
+  if (!entry) return null;
+  const vol = db.getVolume(entry.volume_id);
+  if (!vol || !vol.root_path) return null;
+  const full = path.join(vol.root_path, entry.rel_path);
+  return fs.existsSync(full) ? full : null;
+}
+
 ipcMain.handle('entries:reveal', (_e, id) => {
   assertInt(id);
-  const entry = db.getEntry(id);
-  if (!entry) return { ok: false, error: 'Entry not found.' };
-  const vol = db.getVolume(entry.volume_id);
-  if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
-  const full = path.join(vol.root_path, entry.rel_path);
-  if (!fs.existsSync(full)) {
-    return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
-  }
+  const full = realPathFor(id);
+  if (!full) return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
   shell.showItemInFolder(full); // opens Explorer with the item selected
+  return { ok: true };
+});
+
+// Open the file in its default application.
+ipcMain.handle('entries:open', async (_e, id) => {
+  assertInt(id);
+  const full = realPathFor(id);
+  if (!full) return { ok: false, error: 'Drive not connected, or the file has moved.' };
+  const err = await shell.openPath(full); // '' on success
+  return err ? { ok: false, error: err } : { ok: true };
+});
+
+// Show the OS "Open with…" chooser (Windows); fall back to default open elsewhere.
+ipcMain.handle('entries:openWith', (_e, id) => {
+  assertInt(id);
+  const full = realPathFor(id);
+  if (!full) return { ok: false, error: 'Drive not connected, or the file has moved.' };
+  if (process.platform === 'win32') {
+    spawn('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', full], { windowsHide: false, detached: true }).unref();
+    return { ok: true };
+  }
+  shell.openPath(full);
   return { ok: true };
 });
 
 // ---- IPC: duplicates -----------------------------------------------------
 
-ipcMain.handle('entries:duplicates', (_e, volumeId) =>
-  db.findDuplicates(volumeId == null ? null : assertInt(volumeId, 'volumeId')));
+ipcMain.handle('entries:duplicates', (_e, opts) => {
+  opts = opts || {};
+  const volumeIds = Array.isArray(opts.volumeIds)
+    ? opts.volumeIds.map(v => assertInt(v, 'volumeId'))
+    : [];
+  return db.findDuplicates({ volumeIds, crossOnly: !!opts.crossOnly });
+});
 
 // ---- IPC: thumbnails (video + image) ------------------------------------
 
@@ -567,6 +602,20 @@ ipcMain.handle('entries:setTags', (_e, id, tags) => {
     .filter(t => t && t.length <= 60))].slice(0, 40);
   db.setTags(id, clean);
   return { ok: true, tags: clean };
+});
+
+ipcMain.handle('entries:addTagBulk', (_e, ids, tag) => {
+  if (!Array.isArray(ids)) throw new Error('Invalid selection.');
+  const cleanIds = ids.map(i => assertInt(i, 'id'));
+  const t = assertStr(tag, 'tag', 60).trim();
+  if (!t) throw new Error('Empty tag.');
+  return db.addTagToEntries(cleanIds, t);
+});
+
+ipcMain.handle('entries:setFlagBulk', (_e, ids, flag) => {
+  if (!Array.isArray(ids)) throw new Error('Invalid selection.');
+  const cleanIds = ids.map(i => assertInt(i, 'id'));
+  return db.setFlagForEntries(cleanIds, flag == null ? null : assertStr(flag, 'flag', 16));
 });
 
 // ---- IPC: space map (treemap) -------------------------------------------

@@ -60,6 +60,7 @@
         <button id="tab-large" class="tab">Large Files</button>
         <button id="tab-space" class="tab">Space Map</button>
         <button id="tab-dupes" class="tab">Duplicates</button>
+        <button id="tab-test" class="tab">Test Drive</button>
         <button id="tab-backup" class="tab">Backup</button>
       </div>
 
@@ -179,6 +180,39 @@
           <button id="dupes-delete-sel" class="btn btn-ghost-danger mini-btn" disabled>Delete selected</button>
         </div>
         <div id="dupes-list" class="dupes-list"></div>
+      </div>
+
+      <div id="view-test" class="view hidden">
+        <div class="test-head">
+          <span class="test-head-title">Test Drive Health</span>
+          <div class="test-controls">
+            <label>Sample size
+              <select id="test-sample">
+                <option value="all">All files</option>
+                <option value="1000" selected>1,000 files</option>
+                <option value="500">500 files</option>
+                <option value="100">100 files</option>
+                <option value="10">10 files</option>
+              </select>
+            </label>
+            <button id="test-start" class="btn btn-primary mini-btn">Start test</button>
+          </div>
+        </div>
+        <div id="test-status" class="test-status hidden">
+          <div id="test-progress-bar" class="progress-bar"></div>
+          <div id="test-progress-text" class="progress-text"></div>
+          <button id="test-cancel" class="btn btn-ghost-danger mini-btn">Cancel</button>
+        </div>
+        <div id="test-results" class="test-results hidden">
+          <div class="test-summary">
+            <span id="test-tested">Tested: 0</span>
+            <span id="test-passed">Passed: 0</span>
+            <span id="test-failed">Failed: 0</span>
+          </div>
+          <div id="test-list" class="test-list"></div>
+          <button id="test-clear" class="btn btn-ghost mini-btn">Clear results</button>
+        </div>
+        <div id="test-empty" class="test-empty">Select a drive to test its health.</div>
       </div>
 
       <div id="view-backup" class="view hidden">

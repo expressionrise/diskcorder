@@ -2407,17 +2407,19 @@ $('tab-starred').addEventListener('click', () => switchTab('starred'));
 $('tab-large').addEventListener('click', () => switchTab('large'));
 $('tab-space').addEventListener('click', () => switchTab('space'));
 $('tab-dupes').addEventListener('click', () => switchTab('dupes'));
+$('tab-test').addEventListener('click', () => switchTab('test'));
 $('tab-backup').addEventListener('click', () => switchTab('backup'));
 
 function switchTab(tab) {
   if (state.tab === tab) return;
   state.tab = tab;
-  for (const t of ['files', 'starred', 'large', 'space', 'dupes', 'backup']) {
+  for (const t of ['files', 'starred', 'large', 'space', 'dupes', 'test', 'backup']) {
     $('tab-' + t).classList.toggle('active', tab === t);
     $('view-' + t).classList.toggle('hidden', tab !== t);
   }
   saveSession();
   if (tab === 'starred') loadStarred();
+  if (tab === 'test') initTestTab();
   if (tab === 'backup') loadBackupTab();
   if (tab === 'space') {
     if (!state.tmTrail.length && state.activeVolumeId != null) {
@@ -3049,6 +3051,122 @@ function tmRenderLegend() {
     box.appendChild(item);
   }
 }
+
+// ---- test drive ----------------------------------------------------------
+
+let testRunning = false;
+let testResults = [];
+
+function initTestTab() {
+  const empty = $('test-empty');
+  const controls = $('test-start').parentElement;
+  if (!state.activeVolumeId) {
+    empty.classList.remove('hidden');
+    controls.classList.add('hidden');
+    $('test-status').classList.add('hidden');
+    $('test-results').classList.add('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  controls.classList.remove('hidden');
+}
+
+async function startDriveTest() {
+  if (testRunning || !state.activeVolumeId) return;
+  const sampleStr = $('test-sample').value;
+  const sampleSize = sampleStr === 'all' ? 0 : parseInt(sampleStr, 10);
+
+  testRunning = true;
+  testResults = [];
+  $('test-start').disabled = true;
+  $('test-sample').disabled = true;
+  $('test-status').classList.remove('hidden');
+  $('test-results').classList.add('hidden');
+  $('test-progress-text').textContent = 'Gathering files…';
+
+  try {
+    const allFiles = await api.listFiles(state.activeVolumeId);
+    let testFiles = allFiles;
+    if (sampleSize > 0 && testFiles.length > sampleSize) {
+      testFiles = [];
+      const step = Math.floor(allFiles.length / sampleSize);
+      for (let i = 0; i < allFiles.length && testFiles.length < sampleSize; i += step) {
+        testFiles.push(allFiles[i]);
+      }
+    }
+
+    $('test-progress-text').textContent = `Testing 0 / ${testFiles.length} files…`;
+    let passed = 0, failed = 0;
+
+    for (let i = 0; i < testFiles.length; i++) {
+      if (!testRunning) break;
+      const file = testFiles[i];
+      if (file.is_dir) continue;
+
+      const res = await api.testFile(file.id).catch(() => ({ ok: false, status: 'error' }));
+      const success = res && res.ok;
+      if (success) passed++; else failed++;
+      testResults.push({ file, result: res, success });
+
+      const pct = Math.floor(((i + 1) / testFiles.length) * 100);
+      $('test-progress-bar').style.width = pct + '%';
+      $('test-progress-text').textContent = `Testing ${i + 1} / ${testFiles.length} files… (${passed} passed, ${failed} failed)`;
+    }
+
+    showTestResults(testFiles.length - (testFiles.filter(f => f.is_dir).length), passed, failed);
+  } catch (err) {
+    toast('Test failed: ' + err.message, true);
+  } finally {
+    testRunning = false;
+    $('test-start').disabled = false;
+    $('test-sample').disabled = false;
+    $('test-status').classList.add('hidden');
+  }
+}
+
+function showTestResults(tested, passed, failed) {
+  $('test-results').classList.remove('hidden');
+  $('test-tested').textContent = `Tested: ${tested}`;
+  $('test-passed').textContent = `Passed: ${passed}`;
+  $('test-failed').textContent = `Failed: ${failed}`;
+
+  const list = $('test-list');
+  list.innerHTML = '';
+  for (const r of testResults.filter(r => !r.success)) {
+    const item = document.createElement('div');
+    item.className = 'test-item error';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'test-name';
+    nameEl.textContent = r.file.name;
+    const statusEl = document.createElement('div');
+    statusEl.className = 'test-status-detail';
+    const status = r.result ? r.result.status : 'error';
+    const statusText = {
+      'damaged': 'File damaged or corrupt',
+      'unreadable': 'File unreadable',
+      'size-mismatch': 'File size mismatch',
+      'missing': 'File not found',
+      'error': 'Test error'
+    }[status] || status;
+    statusEl.textContent = statusText;
+    item.append(nameEl, statusEl);
+    list.appendChild(item);
+  }
+  if (!testResults.some(r => !r.success)) {
+    const msg = document.createElement('div');
+    msg.className = 'test-success';
+    msg.textContent = 'All files passed! Drive is healthy.';
+    list.appendChild(msg);
+  }
+}
+
+$('test-start').addEventListener('click', startDriveTest);
+$('test-cancel').addEventListener('click', () => { testRunning = false; });
+$('test-clear').addEventListener('click', () => {
+  testResults = [];
+  $('test-results').classList.add('hidden');
+  $('test-list').innerHTML = '';
+});
 
 // ---- color theme ---------------------------------------------------------
 

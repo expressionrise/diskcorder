@@ -1672,23 +1672,38 @@ async function startTransferFlow(move) {
 
 // ---- thumbnail batch generation ------------------------------------------
 
-async function generateThumbnails(v) {
+async function generateThumbnails(v, skipConfirm = false) {
   if (!state.reachable[v.id]) { toast('Connect “' + v.name + '” first.', true); return; }
   if (!state.ffmpegReady) { toast('ffmpeg not found — previews disabled.', true); return; }
   if (thumbsBusy) { toast('Preview generation is already running — see the bar below.'); return; }
+
+  if (!skipConfirm) {
+    const ok = await promptModal({
+      title: `Generate previews for “${v.name}”?`,
+      sub: 'This will scan media files and create thumbnail previews. It may take a while on large drives.',
+      confirmText: 'Generate', input: false
+    });
+    if (!ok) return;
+  }
+
   thumbsBusy = true;
   const drawer = showOp('thumbs', `Previews · ${v.name}`);
-  const res = await api.generateThumbs(v.id, { previews: false }).catch(err => ({ ok: false, error: err.message }));
-  hideOp(drawer);
-  thumbsBusy = false;
-  await refreshCoverage([v.id]);
-  if (!res || !res.ok) { toast(res && res.error ? res.error : 'Preview generation failed.', true); }
-  else if (res.total === 0) { toast('All previews are already up to date.'); }
-  else {
-    toast(res.canceled ? 'Preview generation paused.' : `Generated ${res.done} previews.`);
-    if (v.id === state.activeVolumeId && !state.searching) await loadListing();
+  try {
+    const res = await api.generateThumbs(v.id, { previews: false }).catch(err => ({ ok: false, error: err.message }));
+    if (!res || !res.ok) { toast(res && res.error ? res.error : 'Preview generation failed.', true); }
+    else if (res.total === 0) { toast('All previews are already up to date.'); }
+    else {
+      toast(res.canceled ? 'Preview generation paused.' : `Generated ${res.done} previews.`);
+      if (v.id === state.activeVolumeId && !state.searching) await loadListing();
+    }
+  } catch (err) {
+    toast('Preview generation error: ' + (err.message || err), true);
+  } finally {
+    hideOp(drawer);
+    thumbsBusy = false;
+    await refreshCoverage([v.id]);
+    drainAutoThumbs(); // resume any auto work that was waiting
   }
-  drainAutoThumbs(); // resume any auto work that was waiting
 }
 
 // ---- search --------------------------------------------------------------

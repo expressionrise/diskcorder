@@ -346,13 +346,10 @@
               destination and which top-level folders to include; it copies new and changed files and
               skips unchanged ones (additive — it never deletes anything at the destination).</li>
           <li><strong>Relocate</strong> — point this drive to a new folder or drive letter and rebuild its catalog (use if its location changed).</li>
-          <li><strong>Previews</strong> — generate the still previews for every image and video on
-              this drive. It resumes where it left off and skips anything already made, so re-running is
-              fast. (Previews are also created automatically after a scan and on demand as you browse.)</li>
-          <li><strong>Rename</strong> — rename the drive inside Diskcorder only (the disk is untouched).</li>
-          <li><strong>Export catalog</strong> — save this drive's catalog, <em>including its
-              previews</em>, to a single <code>.json</code> file you can import on another laptop.
-              (Hover-preview clips aren't bundled — they regenerate on demand.)</li>
+          <li><strong>Previews</strong> — generate thumbnail previews for images and videos. Requires your confirmation before starting. Resumes where it left off.</li>
+          <li><strong>Rename</strong> — rename the drive's label in Diskcorder only (the disk is untouched).</li>
+          <li><strong>Mark</strong> — write an identifier file to the drive so Diskcorder can recognize it when reconnected later.</li>
+          <li><strong>Export</strong> — save the catalog as a <code>.json</code> file. Choose to save on your computer or directly on the drive itself (.diskcorder-catalog.json) for seamless workflow.</li>
           <li><strong>Remove</strong> — remove the drive from Diskcorder. The disk and its files are untouched.</li>
         </ul>
 
@@ -378,6 +375,8 @@
               or archiving.</li>
           <li><strong>Space Map</strong> — a treemap of what's using room on the drive.</li>
           <li><strong>Duplicates</strong> — find identical files across one or all mapped drives.</li>
+          <li><strong>Test Drive</strong> — verify drive health and authenticity. Test a sample of files for corruption and check if the drive's actual capacity matches its claim (detects fake/counterfeit drives with misrepresented capacity).</li>
+          <li><strong>Backup</strong> — schedule recurring backup actions to copy files between drives.</li>
           <li><strong>Search</strong> — search names, notes, and labels across every drive (or just the open one).</li>
         </ul>
       </div>

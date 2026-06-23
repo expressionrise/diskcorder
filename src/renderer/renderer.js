@@ -3341,6 +3341,19 @@ $('theme-btn').addEventListener('click', () => {
 });
 applyTheme((() => { try { return localStorage.getItem('diskcorder-theme') || 'dark'; } catch { return 'dark'; } })());
 
+// Show tutorial on first launch
+try {
+  if (!localStorage.getItem('diskcorder-seen-tutorial')) {
+    localStorage.setItem('diskcorder-seen-tutorial', 'true');
+    setTimeout(() => $('info-modal').classList.remove('hidden'), 500);
+  }
+} catch { /* ignore */ }
+
+// Info button and modal
+$('info-btn').addEventListener('click', () => $('info-modal').classList.remove('hidden'));
+$('info-close').addEventListener('click', () => $('info-modal').classList.add('hidden'));
+$('info-modal').addEventListener('click', (e) => { if (e.target.id === 'info-modal') $('info-modal').classList.add('hidden'); });
+
 // ---- boot ----------------------------------------------------------------
 
 (async () => {

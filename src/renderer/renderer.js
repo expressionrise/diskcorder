@@ -263,7 +263,7 @@ function renderRail() {
         <button class="mini" data-act="rescan" title="Point this drive to a new folder or drive letter and rebuild its catalog.">Relocate</button>
         <button class="mini" data-act="thumbs" title="Generate the still previews for every image and video on this drive. Resumes where it left off and skips ones already made.">Previews</button>
         <button class="mini" data-act="rename" title="Rename this drive's label in Diskcorder (the disk itself is untouched)">Rename</button>
-        <button class="mini" data-act="export" title="Save this drive's catalog to a .json file you can import elsewhere">Export catalog</button>
+        <button class="mini" data-act="export" title="Save this drive's catalog to a .json file you can import elsewhere">Export</button>
         <button class="mini mini-danger" data-act="remove" title="Remove this drive from Diskcorder (the disk and its files are untouched)">Remove</button>
       </div>
       <label class="vol-autosync" title="Automatically update this drive's catalog whenever it connects">

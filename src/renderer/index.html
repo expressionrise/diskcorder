@@ -386,6 +386,33 @@
     </div>
   </div>
 
+  <!-- Interactive Tutorial -->
+  <div id="tutorial-overlay" class="tutorial-overlay hidden"></div>
+  <div id="tutorial-highlight" class="tutorial-highlight hidden"></div>
+  <div id="tutorial-arrow" class="tutorial-arrow hidden"></div>
+
+  <div class="modal-backdrop hidden" id="tutorial-modal">
+    <div class="modal tutorial-step-modal">
+      <div class="tutorial-progress">
+        <div class="progress-bar">
+          <div id="tutorial-progress-fill" class="progress-fill"></div>
+        </div>
+        <span id="tutorial-step-counter">1 / 5</span>
+      </div>
+
+      <h2 id="tutorial-title">Welcome to Diskcorder</h2>
+      <p id="tutorial-subtitle" class="tutorial-subtitle"></p>
+
+      <div id="tutorial-content" class="tutorial-content"></div>
+
+      <div class="modal-actions tutorial-actions">
+        <button id="tutorial-skip" class="btn btn-ghost">Skip tour</button>
+        <button id="tutorial-prev" class="btn btn-ghost" style="display:none;">← Back</button>
+        <button id="tutorial-next" class="btn btn-primary">Next →</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Backup job form -->
   <div class="modal-backdrop hidden" id="jobform-modal">
     <div class="modal">

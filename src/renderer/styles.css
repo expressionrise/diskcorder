@@ -614,6 +614,41 @@ html, body {
 .info-body strong { color: var(--text); }
 .info-body code { font-family: var(--mono); font-size: 11.5px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
 
+/* ---- Interactive Tutorial ---------------------------------------------- */
+.tutorial-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 49;
+  pointer-events: none;
+}
+.tutorial-highlight {
+  position: fixed; border: 2px solid var(--accent); border-radius: 8px; z-index: 48;
+  box-shadow: 0 0 0 3px rgba(232,160,32,.2);
+  pointer-events: none; animation: pulse-border 2s infinite;
+}
+@keyframes pulse-border { 0%, 100% { box-shadow: 0 0 0 3px rgba(232,160,32,.2); } 50% { box-shadow: 0 0 0 8px rgba(232,160,32,.1); } }
+
+.tutorial-arrow {
+  position: fixed; z-index: 48; pointer-events: none;
+  width: 0; height: 0; border-left: 12px solid transparent; border-right: 12px solid transparent;
+  border-top: 18px solid var(--accent); filter: drop-shadow(0 2px 4px rgba(0,0,0,.5));
+}
+.tutorial-arrow.left { border-left: 18px solid var(--accent); border-right: 0; border-top: 12px solid transparent; border-bottom: 12px solid transparent; }
+.tutorial-arrow.right { border-right: 18px solid var(--accent); border-left: 0; border-top: 12px solid transparent; border-bottom: 12px solid transparent; }
+.tutorial-arrow.down { border-top: 0; border-bottom: 18px solid var(--accent); }
+
+.tutorial-step-modal { width: 420px; }
+.tutorial-progress { margin-bottom: 14px; }
+.progress-bar { height: 3px; background: var(--line); border-radius: 0; margin-bottom: 6px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); width: 20%; transition: width 0.3s ease; }
+#tutorial-step-counter { font-size: 11px; color: var(--text-dim); }
+
+.tutorial-subtitle { margin: 0 0 16px !important; color: var(--text-dim); font-size: 12px; }
+.tutorial-content { margin-bottom: 12px; font-size: 13px; line-height: 1.5; color: var(--text); }
+.tutorial-content strong { color: var(--accent); }
+
+.tutorial-actions { justify-content: space-between !important; }
+.tutorial-actions .btn-ghost { opacity: 0.7; }
+.tutorial-actions .btn-ghost:hover { opacity: 1; }
+
 /* ---- Scan overlay ----------------------------------------------------- */
 .scan-overlay {
   position: fixed; inset: 0; background: rgba(10,11,15,.78);

@@ -3341,11 +3341,124 @@ $('theme-btn').addEventListener('click', () => {
 });
 applyTheme((() => { try { return localStorage.getItem('diskcorder-theme') || 'dark'; } catch { return 'dark'; } })());
 
-// Show tutorial on first launch
+// ---- Interactive Tutorial ------------------------------------------------
+
+let tutorialStep = 0;
+const tutorialSteps = [
+  {
+    title: 'Welcome to Diskcorder',
+    subtitle: 'Catalog your external drives to search and browse them anytime',
+    content: 'Diskcorder remembers what\'s on your drives even when unplugged. <strong>Map a drive</strong> to scan it and create a searchable catalog.',
+    target: null,
+    arrow: null
+  },
+  {
+    title: 'Map a Drive',
+    subtitle: 'Start by connecting and cataloging a drive',
+    content: 'Click <strong>Map a drive</strong> to scan a connected drive and add it to your catalog. The app will remember its contents even after you unplug it.',
+    target: 'map-drive',
+    arrow: 'down'
+  },
+  {
+    title: 'Browse Your Files',
+    subtitle: 'Navigate folders and search your catalog',
+    content: 'Click a drive in the left rail to browse its files. Use the tabs to explore different views: <strong>Files, Starred, Large Files, Space Map, Duplicates, Test Drive, and Backup</strong>.',
+    target: null,
+    arrow: null
+  },
+  {
+    title: 'Manage Your Drives',
+    subtitle: 'Mark, test, and export your catalogs',
+    content: 'Each drive has buttons: <strong>Update</strong> (refresh catalog), <strong>Mark</strong> (identify the drive), <strong>Previews</strong> (generate thumbnails), <strong>Export</strong> (save catalog), and more.',
+    target: null,
+    arrow: null
+  },
+  {
+    title: 'You\'re Ready!',
+    subtitle: 'Map your first drive to get started',
+    content: 'Click <strong>Map a drive</strong> to scan your first external drive. You can access this tutorial anytime by clicking the <strong>?</strong> button in the top right.',
+    target: 'map-drive',
+    arrow: 'down'
+  }
+];
+
+function showTutorialStep(step) {
+  tutorialStep = step;
+  const stepData = tutorialSteps[step];
+  const total = tutorialSteps.length;
+
+  // Update modal content
+  $('tutorial-title').textContent = stepData.title;
+  $('tutorial-subtitle').textContent = stepData.subtitle;
+  $('tutorial-content').textContent = stepData.content;
+  $('tutorial-content').innerHTML = stepData.content;
+  $('tutorial-step-counter').textContent = `${step + 1} / ${total}`;
+  $('tutorial-progress-fill').style.width = ((step + 1) / total * 100) + '%';
+
+  // Show/hide back button
+  $('tutorial-prev').style.display = step > 0 ? 'block' : 'none';
+  $('tutorial-next').textContent = step === total - 1 ? 'Got it!' : 'Next →';
+
+  // Highlight target element
+  const overlay = $('tutorial-overlay');
+  const highlight = $('tutorial-highlight');
+  const arrow = $('tutorial-arrow');
+
+  if (stepData.target) {
+    const el = $(stepData.target);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      overlay.classList.remove('hidden');
+      highlight.classList.remove('hidden', 'left', 'right', 'down');
+      highlight.style.left = (rect.left - 4) + 'px';
+      highlight.style.top = (rect.top - 4) + 'px';
+      highlight.style.width = (rect.width + 8) + 'px';
+      highlight.style.height = (rect.height + 8) + 'px';
+
+      // Position arrow
+      arrow.classList.remove('hidden', 'left', 'right', 'down');
+      if (stepData.arrow) arrow.classList.add(stepData.arrow);
+      if (stepData.arrow === 'down') {
+        arrow.style.left = (rect.left + rect.width / 2 - 12) + 'px';
+        arrow.style.top = (rect.top + rect.height + 12) + 'px';
+      }
+    }
+  } else {
+    overlay.classList.add('hidden');
+    highlight.classList.add('hidden');
+    arrow.classList.add('hidden');
+  }
+}
+
+function closeTutorial() {
+  $('tutorial-modal').classList.add('hidden');
+  $('tutorial-overlay').classList.add('hidden');
+  $('tutorial-highlight').classList.add('hidden');
+  $('tutorial-arrow').classList.add('hidden');
+  localStorage.setItem('diskcorder-completed-tutorial', 'true');
+}
+
+// Tutorial event listeners
+$('tutorial-skip').addEventListener('click', closeTutorial);
+$('tutorial-next').addEventListener('click', () => {
+  if (tutorialStep < tutorialSteps.length - 1) {
+    showTutorialStep(tutorialStep + 1);
+  } else {
+    closeTutorial();
+  }
+});
+$('tutorial-prev').addEventListener('click', () => {
+  if (tutorialStep > 0) showTutorialStep(tutorialStep - 1);
+});
+
+// Show interactive tutorial on first launch
 try {
   if (!localStorage.getItem('diskcorder-seen-tutorial')) {
     localStorage.setItem('diskcorder-seen-tutorial', 'true');
-    setTimeout(() => $('info-modal').classList.remove('hidden'), 500);
+    setTimeout(() => {
+      showTutorialStep(0);
+      $('tutorial-modal').classList.remove('hidden');
+    }, 600);
   }
 } catch { /* ignore */ }
 

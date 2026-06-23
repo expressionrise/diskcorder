@@ -263,6 +263,7 @@ function renderRail() {
         <button class="mini" data-act="rescan" title="Point this drive to a new folder or drive letter and rebuild its catalog.">Relocate</button>
         <button class="mini" data-act="thumbs" title="Generate the still previews for every image and video on this drive. Resumes where it left off and skips ones already made.">Previews</button>
         <button class="mini" data-act="rename" title="Rename this drive's label in Diskcorder (the disk itself is untouched)">Rename</button>
+        <button class="mini" data-act="mark" title="Write an identifier file to this drive so you can recognize it later">Mark</button>
         <button class="mini" data-act="export" title="Save this drive's catalog to a .json file you can import elsewhere">Export</button>
         <button class="mini mini-danger" data-act="remove" title="Remove this drive from Diskcorder (the disk and its files are untouched)">Remove</button>
       </div>
@@ -283,6 +284,7 @@ function renderRail() {
     card.querySelector('[data-act="rescan"]').addEventListener('click', () => mapDrive(v));
     card.querySelector('[data-act="thumbs"]').addEventListener('click', () => generateThumbnails(v));
     card.querySelector('[data-act="rename"]').addEventListener('click', () => renameVolume(v));
+    card.querySelector('[data-act="mark"]').addEventListener('click', () => markDrive(v));
     card.querySelector('[data-act="export"]').addEventListener('click', () => exportVolume(v));
     card.querySelector('[data-act="remove"]').addEventListener('click', () => removeVolume(v));
     const autoCb = card.querySelector('[data-act="autosync"]');
@@ -390,11 +392,38 @@ async function renameVolume(v) {
 }
 
 async function exportVolume(v) {
-  const res = await api.exportVolume(v.id).catch(e => ({ ok: false, error: e.message }));
-  if (!res || (!res.ok && !res.canceled)) { toast(res && res.error ? res.error : 'Export failed.', true); return; }
-  if (res.ok) {
-    const t = res.thumbs ? ` and ${res.thumbs.toLocaleString()} thumbnails` : '';
-    toast(`Exported ${res.count.toLocaleString()} entries${t}.`);
+  const lastToDrive = localStorage.getItem('export-to-drive') === 'true';
+  const toDrive = await promptModal({
+    title: `Save "${v.name}" catalog`,
+    sub: 'Save to your computer (local) or on the drive itself?',
+    confirmText: lastToDrive ? 'Save on drive' : 'Save on computer',
+    input: false
+  });
+  if (toDrive === null) return;
+
+  let res;
+  try {
+    const saveOnDrive = toDrive === true;
+    localStorage.setItem('export-to-drive', saveOnDrive);
+
+    if (saveOnDrive) {
+      if (!state.reachable[v.id]) { toast('Connect the drive first.', true); return; }
+      res = await api.exportVolumeToDrive(v.id).catch(e => ({ ok: false, error: e.message }));
+      if (!res || (!res.ok && !res.canceled)) { toast(res && res.error ? res.error : 'Export failed.', true); return; }
+      if (res.ok) {
+        const t = res.thumbs ? ` and ${res.thumbs.toLocaleString()} previews` : '';
+        toast(`Exported ${res.count.toLocaleString()} entries${t} to the drive.`);
+      }
+    } else {
+      res = await api.exportVolume(v.id).catch(e => ({ ok: false, error: e.message }));
+      if (!res || (!res.ok && !res.canceled)) { toast(res && res.error ? res.error : 'Export failed.', true); return; }
+      if (res.ok) {
+        const t = res.thumbs ? ` and ${res.thumbs.toLocaleString()} previews` : '';
+        toast(`Exported ${res.count.toLocaleString()} entries${t} to your computer.`);
+      }
+    }
+  } catch (err) {
+    toast('Export error: ' + err.message, true);
   }
 }
 
@@ -407,6 +436,16 @@ async function importVolume() {
   const vol = state.volumes.find(v => v.id === res.volumeId);
   if (vol) await openVolume(vol);
   toast(res.thumbs ? `Catalog imported with ${res.thumbs.toLocaleString()} thumbnails.` : 'Catalog imported.');
+}
+
+async function markDrive(v) {
+  if (!state.reachable[v.id]) { toast('Connect "' + v.name + '" first.', true); return; }
+  const res = await api.markDrive(v.id).catch(e => ({ ok: false, error: e.message }));
+  if (res && res.ok) {
+    toast(`"${v.name}" marked with identifier file. You can now recognize this drive.`);
+  } else {
+    toast(res && res.error ? res.error : 'Failed to mark drive.', true);
+  }
 }
 
 async function removeVolume(v) {

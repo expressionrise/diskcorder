@@ -157,6 +157,24 @@ ipcMain.handle('volumes:export', async (_e, id) => {
   return { ok: true, path: res.filePath, count: data.entries.length, thumbs: Object.keys(data.thumbs).length };
 });
 
+ipcMain.handle('volumes:export-to-drive', async (_e, id) => {
+  assertInt(id);
+  const vol = db.getVolume(id);
+  if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
+    return { ok: false, error: 'Drive not found or not connected.' };
+  }
+  const data = db.exportVolume(id);
+  if (!data) return { ok: false, error: 'Catalog not found.' };
+  data.thumbs = await thumbs.exportThumbs(id);
+  const catalogPath = path.join(vol.root_path, '.diskcorder-catalog.json');
+  try {
+    await fsp.writeFile(catalogPath, JSON.stringify(data), 'utf8');
+    return { ok: true, path: catalogPath, count: data.entries.length, thumbs: Object.keys(data.thumbs).length };
+  } catch (e) {
+    return { ok: false, error: 'Could not write catalog to drive: ' + e.message };
+  }
+});
+
 ipcMain.handle('volumes:import', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Import drive catalog',
@@ -172,6 +190,22 @@ ipcMain.handle('volumes:import', async () => {
     const thumbsRestored = await thumbs.importThumbs(volumeId, data.thumbs, idMap);
     return { ok: true, volumeId, thumbs: thumbsRestored };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('drive:mark', async (_e, id) => {
+  assertInt(id);
+  const vol = db.getVolume(id);
+  if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
+    return { ok: false, error: 'Drive not found or not connected.' };
+  }
+  const markFile = path.join(vol.root_path, '.diskcorder-id');
+  const marker = { volumeId: vol.id, name: vol.name, markedAt: new Date().toISOString() };
+  try {
+    await fsp.writeFile(markFile, JSON.stringify(marker, null, 2), 'utf8');
+    return { ok: true, message: 'Drive marked successfully.' };
+  } catch (e) {
+    return { ok: false, error: 'Could not write identifier file: ' + e.message };
+  }
 });
 
 ipcMain.handle('drive:pick', async () => {

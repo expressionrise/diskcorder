@@ -3053,14 +3053,13 @@ function tmRenderLegend() {
 // ---- color theme ---------------------------------------------------------
 
 const THEMES = [
-  { key: 'dark',  cls: '',            name: 'Golden Dark' },
+  { key: 'dark',  cls: '',            name: 'Dark' },
   { key: 'blue',  cls: 'theme-blue',  name: 'GitHub Dark' },
-  { key: 'dim',   cls: 'theme-dim',   name: 'GitHub Dim' },
   { key: 'light', cls: 'theme-light', name: 'GitHub Light' }
 ];
 function applyTheme(key) {
   const t = THEMES.find(x => x.key === key) || THEMES[0];
-  document.body.classList.remove('theme-blue', 'theme-dim', 'theme-light');
+  document.body.classList.remove('theme-blue', 'theme-light');
   if (t.cls) document.body.classList.add(t.cls);
   try { localStorage.setItem('diskcorder-theme', t.key); } catch { /* ignore */ }
   const btn = $('theme-btn');

@@ -42,23 +42,6 @@ body.theme-blue {
   --btn-border-b: #202024;
 }
 
-body.theme-dim {
-  --bg:        #1e1b18;
-  --surface:   #272420;
-  --surface-2: #322e29;
-  --surface-3: #3a3530;
-  --line:      #504840;
-  --text:      #ccc4b8;
-  --text-dim:  #908070;
-  --text-faint:#605040;
-  --accent:    #e8a020;
-  --accent-ink:#1a0e00;
-  --btn-grad: linear-gradient(180deg, #3c3830 0%, #322e29 100%);
-  --btn-grad-primary: linear-gradient(180deg, #f0a828 0%, #d89018 100%);
-  --btn-border-t: #524a42;
-  --btn-border-b: #1c1a16;
-}
-
 body.theme-light {
   --bg:        #d4d4d4;
   --surface:   #e0e0e0;
@@ -150,8 +133,8 @@ html, body {
   white-space: nowrap;
 }
 .btn:hover {
-  background: linear-gradient(180deg, #424242 0%, #363636 100%);
-  border-top-color: #525252;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 80%, white 20%), var(--surface-2));
+  border-top-color: color-mix(in srgb, var(--btn-border-t) 120%, white 10%);
 }
 .btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
@@ -639,15 +622,15 @@ html, body {
   font: inherit; font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-dim);
-  background: linear-gradient(180deg, #363636 0%, #2c2c2c 100%);
-  border-top: 1px solid #404040;
-  border-right: 1px solid #2a2a2a;
-  border-bottom: 1px solid #222222;
-  border-left: 1px solid #2a2a2a;
+  background: var(--btn-grad);
+  border-top: 1px solid var(--btn-border-t);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--btn-border-b);
+  border-left: 1px solid var(--line);
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.mini:hover { color: var(--text); background: linear-gradient(180deg, #404040 0%, #343434 100%); }
+.mini:hover { color: var(--text); background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 80%, white 20%), var(--surface-2)); border-top-color: color-mix(in srgb, var(--btn-border-t) 120%, white 10%); }
 .mini-danger:hover { border-color: var(--danger); color: var(--danger); }
 
 /* ---- Video thumbnails in listing rows -------------------------------- */

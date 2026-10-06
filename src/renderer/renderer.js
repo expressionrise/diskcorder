@@ -572,26 +572,27 @@ function saveVisits() {
   try { localStorage.setItem(VISITS_KEY, JSON.stringify(visits)); } catch { /* storage unavailable */ }
 }
 
-function noteVisit(volId, rel) {
-  if (!rel) return;                          // the drive root isn't worth marking
+function noteVisit(volId, rel, id) {
+  if (!rel) { lastVisitKey = null; return; }   // the drive root isn't marked, but leaving a folder resets re-render dedupe
   const key = `${volId}:${rel}`;
   if (key === lastVisitKey) return;          // re-render of the same folder
   lastVisitKey = key;
   const v = visits[key] || { n: 0, t: 0 };
-  visits[key] = { n: v.n + 1, t: Date.now() };
+  visits[key] = { n: v.n + 1, t: Date.now(), id };
   saveVisits();
   refreshVisitDots();
+  renderFrequent();
 }
 
 // 0 = never, 1..3 = increasingly hot. Counts decay with a ~30-day half-life.
 function visitLevel(volId, rel) {
   const v = visits[`${volId}:${rel}`];
-  if (!v) return { level: 0 };
+  if (!v) return { level: 0, score: 0 };
   const ageDays = (Date.now() - v.t) / 86400000;
   const score = v.n * Math.pow(0.5, ageDays / 30);
   const level = score >= 6 ? 3 : score >= 2.5 ? 2 : 1;
   const when = ageDays < 1 ? 'today' : `${Math.round(ageDays)} day${Math.round(ageDays) === 1 ? '' : 's'} ago`;
-  return { level, tip: `Opened ${v.n}× · last ${when}` };
+  return { level, score, tip: `Opened ${v.n}× · last ${when}` };
 }
 
 function makeVisitDot(volId, rel) {
@@ -627,6 +628,41 @@ function applyVisitStyle(key) {
   const btn = $('visit-style-btn');
   if (btn) btn.textContent = 'Marks: ' + VISIT_STYLES.find(v => v.key === key).name;
   refreshVisitDots();
+  renderFrequent();
+}
+
+// "Frequent" shortcut list in the rail: the active drive's most-opened folders.
+function renderFrequent() {
+  const head = $('freq-head'), list = $('freq-list');
+  if (!head || !list) return;
+  list.innerHTML = '';
+  const prefix = `${state.activeVolumeId}:`;
+  const top = state.activeVolumeId == null || visitStyle === 'off' ? [] : Object.entries(visits)
+    .filter(([k, v]) => k.startsWith(prefix) && v.id != null)
+    .map(([k, v]) => ({ rel: k.slice(prefix.length), v, score: visitLevel(state.activeVolumeId, k.slice(prefix.length)).score }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+  head.classList.toggle('hidden', !top.length);
+  list.classList.toggle('hidden', !top.length);
+  for (const t of top) {
+    const row = document.createElement('div');
+    row.className = 'freq-row';
+    const name = document.createElement('span');
+    name.className = 'freq-name';
+    name.textContent = t.rel;
+    name.title = t.rel;
+    const cnt = document.createElement('span');
+    cnt.className = 'freq-count';
+    cnt.textContent = `${t.v.n}\u00d7`;
+    row.append(makeVisitDot(state.activeVolumeId, t.rel), name, cnt);
+    row.addEventListener('click', async () => {
+      // Entry ids change on a re-scan: only jump if the id still points at this folder.
+      const e = await api.getEntry(t.v.id).catch(() => null);
+      if (e && e.rel_path === t.rel && e.is_dir) navigateToFolder(t.v.id);
+      else { delete visits[`${prefix}${t.rel}`]; saveVisits(); renderFrequent(); toast('That folder changed since the last scan.', true); }
+    });
+    list.appendChild(row);
+  }
 }
 
 function refreshVisitDots() {
@@ -639,7 +675,7 @@ async function loadListing() {
   saveSession();
 
   const parent = state.trail[state.trail.length - 1];
-  if (state.fileView === 'folders') noteVisit(state.activeVolumeId, parent.rel);
+  if (state.fileView === 'folders') noteVisit(state.activeVolumeId, parent.rel, parent.id);
 
   // List + Gallery list every file under the CURRENT folder (recursively), so
   // switching views keeps you in the same place; Folders browses the tree.
@@ -718,6 +754,13 @@ function parseTagList(tagsJson) {
   try { const a = JSON.parse(tagsJson); return Array.isArray(a) ? a : []; } catch { return []; }
 }
 
+// Clicking a tag chip lists everything carrying that tag (runs it as a search).
+function searchByTag(tag) {
+  const box = $('search-input');
+  box.value = tag;
+  box.dispatchEvent(new Event('input'));
+}
+
 // Append a row of tag chips to a list/gallery item's label, so tags are
 // visible without opening the detail pane.
 function appendTagChips(label, r) {
@@ -729,6 +772,8 @@ function appendTagChips(label, r) {
     const chip = document.createElement('span');
     chip.className = 'row-tag';
     chip.textContent = t;
+    chip.title = `Show everything tagged “${t}”`;
+    chip.addEventListener('click', (e) => { e.stopPropagation(); searchByTag(t); });
     wrap.appendChild(chip);
   }
   label.appendChild(wrap);
@@ -770,6 +815,7 @@ async function navigateToFolder(folderId) {
 // ---- rail folder tree ----------------------------------------------------
 
 async function loadFolderTree() {
+  renderFrequent();
   const head = $('tree-head'), tree = $('folder-tree');
   if (state.activeVolumeId == null) {
     head.classList.add('hidden'); tree.classList.add('hidden'); tree.innerHTML = '';
@@ -1341,9 +1387,11 @@ function renderTags(entry) {
     const chip = document.createElement('span');
     chip.className = 'tag-chip';
     chip.textContent = t;
+    chip.title = `Show everything tagged “${t}”`;
+    chip.addEventListener('click', () => searchByTag(t));
     const x = document.createElement('button');
     x.className = 'tag-x'; x.textContent = '×'; x.title = 'Remove tag';
-    x.addEventListener('click', () => removeTag(t));
+    x.addEventListener('click', (e) => { e.stopPropagation(); removeTag(t); });
     chip.appendChild(x);
     box.appendChild(chip);
   }
@@ -1791,7 +1839,7 @@ async function startTransferFlow(move) {
 
 // ---- thumbnail batch generation ------------------------------------------
 
-async function generateThumbnails(v, skipConfirm = false) {
+async function generateThumbnails(v, skipConfirm = false, refresh = false) {
   if (!state.reachable[v.id]) { toast('Connect “' + v.name + '” first.', true); return; }
   if (!state.ffmpegReady) { toast('ffmpeg not found — previews disabled.', true); return; }
   if (thumbsBusy) { toast('Preview generation is already running — see the bar below.'); return; }
@@ -1805,12 +1853,16 @@ async function generateThumbnails(v, skipConfirm = false) {
     if (!ok) return;
   }
 
+  let offerRefresh = false;
   thumbsBusy = true;
   const drawer = showOp('thumbs', `Previews · ${v.name}`);
   try {
-    const res = await api.generateThumbs(v.id, { previews: false }).catch(err => ({ ok: false, error: err.message }));
+    const res = await api.generateThumbs(v.id, { previews: false, refresh }).catch(err => ({ ok: false, error: err.message }));
     if (!res || !res.ok) { toast(res && res.error ? res.error : 'Preview generation failed.', true); }
-    else if (res.total === 0) { toast('All previews are already up to date.'); }
+    else if (res.total === 0) {
+      toast('All previews are already up to date.');
+      offerRefresh = !refresh;
+    }
     else {
       toast(res.canceled ? 'Preview generation paused.' : `Generated ${res.done} previews.`);
       if (v.id === state.activeVolumeId && !state.searching) await loadListing();
@@ -1822,6 +1874,15 @@ async function generateThumbnails(v, skipConfirm = false) {
     thumbsBusy = false;
     await refreshCoverage([v.id]);
     drainAutoThumbs(); // resume any auto work that was waiting
+  }
+  // Everything already exists: offer to redo video stills with the smarter frame picker.
+  if (offerRefresh) {
+    const again = await promptModal({
+      title: 'Re-create video thumbnails?',
+      sub: `All previews for “${v.name}” already exist. Re-create the video thumbnails with the smarter picker (skips black and blurry frames)? Existing thumbnails are only replaced once the new one is ready.`,
+      confirmText: 'Re-create', input: false
+    });
+    if (again) await generateThumbnails(v, true, true);
   }
 }
 

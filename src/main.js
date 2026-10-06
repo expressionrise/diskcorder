@@ -610,6 +610,7 @@ ipcMain.handle('thumbs:cachesize', (_e, volumeId) => thumbs.cacheSize(assertInt(
 ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   assertInt(volumeId);
   const previews = !!(opts && opts.previews);
+  const refresh = !!(opts && opts.refresh);   // re-pick the still of every video (smart frame choice)
   const vol = db.getVolume(volumeId);
   if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
     return { ok: false, error: 'Drive is not connected.' };
@@ -625,7 +626,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   for (const m of media) {
     const kind = kindOf(m.ext);
     if (!kind) continue;
-    const needThumb = !(await thumbs.hasThumb(volumeId, m.id));
+    const needThumb = !(await thumbs.hasThumb(volumeId, m.id)) || (refresh && kind === 'video');
     const needPrev  = previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id));
     if (needThumb || needPrev) pending.push(m);
   }
@@ -652,7 +653,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
       const src = safeJoin(vol.root_path, m.rel_path);
       try {
         if (kind && src && fs.existsSync(src)) {
-          if (!(await thumbs.hasThumb(volumeId, m.id))) await thumbs.generateThumb(src, volumeId, m.id, signal, kind);
+          if (!(await thumbs.hasThumb(volumeId, m.id)) || (refresh && kind === 'video')) await thumbs.generateThumb(src, volumeId, m.id, signal, kind);
           if (previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id))) {
             await thumbs.generatePreview(src, volumeId, m.id, signal);
           }

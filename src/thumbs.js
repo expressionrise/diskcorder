@@ -75,17 +75,52 @@ async function ffmpegAvailable() {
   }
 }
 
-// Spawn ffmpeg with args; resolve on exit 0, reject otherwise. Abortable.
-function run(args, signal, timeoutMs) {
+// Global cap on simultaneous ffmpeg processes. On-demand requests (hovering a
+// list, the detail pane) and the batch generator all go through this, so a fast
+// mouse sweep can no longer fork dozens of ffmpegs and exhaust RAM/handles.
+const MAX_FFMPEG = 3;
+let activeFfmpeg = 0;
+const ffmpegWaiters = [];
+function acquireSlot(signal) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(resolveFfmpeg(), args, { windowsHide: true });
+    if (signal && signal.aborted) return reject(new Error('aborted'));
+    const grant = () => { activeFfmpeg++; resolve(); };
+    if (activeFfmpeg < MAX_FFMPEG) return grant();
+    const w = { grant };
+    ffmpegWaiters.push(w);
+    if (signal) signal.addEventListener('abort', () => {
+      const i = ffmpegWaiters.indexOf(w);
+      if (i >= 0) { ffmpegWaiters.splice(i, 1); reject(new Error('aborted')); }
+    }, { once: true });
+  });
+}
+function releaseSlot() {
+  activeFfmpeg--;
+  const next = ffmpegWaiters.shift();
+  if (next) next.grant();
+}
+
+// Spawn ffmpeg with args; resolve on exit 0, reject otherwise. Abortable.
+async function run(args, signal, timeoutMs) {
+  await acquireSlot(signal);
+  try { await runNow(args, signal, timeoutMs); }
+  finally { releaseSlot(); }
+}
+
+function runNow(args, signal, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     let timer = null;
     proc.stderr.on('data', d => { err += d.toString(); if (err.length > 8000) err = err.slice(-8000); });
     const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     if (timeoutMs) timer = setTimeout(onAbort, timeoutMs);
-    proc.on('error', e => { if (timer) clearTimeout(timer); reject(e); });
+    proc.on('error', e => {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      reject(e);
+    });
     proc.on('close', code => {
       if (timer) clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', onAbort);
@@ -98,13 +133,15 @@ function run(args, signal, timeoutMs) {
 // Parse "Duration: HH:MM:SS.xx" from ffmpeg's stderr (no ffprobe needed).
 function probeDuration(src, signal) {
   return new Promise(resolve => {
-    const proc = spawn(resolveFfmpeg(), ['-i', src], { windowsHide: true });
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', '-i', src], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
-    proc.stderr.on('data', d => { err += d.toString(); });
+    proc.stderr.on('data', d => { err += d.toString(); if (err.length > 16000) err = err.slice(0, 8000) + err.slice(-4000); });
     const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
-    proc.on('error', () => resolve(null));
+    const guard = setTimeout(onAbort, 30000);   // a hung drive must not hold the process forever
+    proc.on('error', () => { clearTimeout(guard); if (signal) signal.removeEventListener('abort', onAbort); resolve(null); });
     proc.on('close', () => {
+      clearTimeout(guard);
       if (signal) signal.removeEventListener('abort', onAbort);
       const m = err.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       if (!m) return resolve(null);
@@ -117,8 +154,16 @@ async function generateThumb(srcPath, volumeId, entryId, signal, kind) {
   const out = thumbPath(volumeId, entryId);
   await fsp.mkdir(path.dirname(out), { recursive: true });
   // Images and videos alike: decode the very first frame directly.
-  const args = ['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
-  await run(args, signal, 60000);
+  // Render to a temp name and rename on success, so a killed/timed-out ffmpeg
+  // never leaves a truncated .jpg that hasThumb() would treat as valid.
+  const tmpOut = path.join(path.dirname(out), `part-${entryId}-${process.pid}.jpg`);
+  try {
+    await run(['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', tmpOut], signal, 60000);
+    await fsp.rename(tmpOut, out);
+  } catch (e) {
+    await fsp.rm(tmpOut, { force: true }).catch(() => {});
+    throw e;
+  }
   return out;
 }
 
@@ -151,12 +196,19 @@ async function generatePreview(srcPath, volumeId, entryId, signal) {
     }
     if (made === 0) throw new Error('no frames extracted');
 
-    await run([
-      '-y', '-framerate', '1', '-start_number', '0',
-      '-i', path.join(tmp, 'f%d.jpg'),
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '10',
-      '-movflags', '+faststart', '-an', out
-    ], signal, 90000);
+    const tmpOut = path.join(path.dirname(out), `part-${entryId}-${process.pid}.mp4`);
+    try {
+      await run([
+        '-y', '-framerate', '1', '-start_number', '0',
+        '-i', path.join(tmp, 'f%d.jpg'),
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '10',
+        '-movflags', '+faststart', '-an', tmpOut
+      ], signal, 90000);
+      await fsp.rename(tmpOut, out);
+    } catch (e) {
+      await fsp.rm(tmpOut, { force: true }).catch(() => {});
+      throw e;
+    }
     return out;
   } finally {
     await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -168,7 +220,7 @@ async function generatePreview(srcPath, volumeId, entryId, signal) {
 // (large files can take a while). Resolves { ok, code, errors } or { aborted }.
 function checkMedia(srcPath, signal) {
   return new Promise((resolve) => {
-    const proc = spawn(resolveFfmpeg(), ['-v', 'error', '-i', srcPath, '-f', 'null', '-'], { windowsHide: true });
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', '-v', 'error', '-i', srcPath, '-f', 'null', '-'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     const onAbort = () => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -190,7 +242,7 @@ function checkMedia(srcPath, signal) {
 // the rail's "how many already created" coverage bar.
 function countThumbs(volumeId) {
   try {
-    return fs.readdirSync(dirFor(volumeId)).reduce((n, f) => n + (f.endsWith('.jpg') ? 1 : 0), 0);
+    return fs.readdirSync(dirFor(volumeId)).reduce((n, f) => n + (/^\d+\.jpg$/.test(f) ? 1 : 0), 0);
   } catch { return 0; }
 }
 

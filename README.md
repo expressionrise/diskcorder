@@ -5,10 +5,12 @@
 <h1 align="center">Diskcorder</h1>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg" /></a>
-  <img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-d4af37" />
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/expressionrise/diskcorder" /></a>
+  <a href="package.json"><img alt="Version" src="https://img.shields.io/github/package-json/v/expressionrise/diskcorder?color=d4af37&label=version" /></a>
+  <a href="https://github.com/expressionrise/diskcorder/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/expressionrise/diskcorder" /></a>
+  <a href="https://github.com/expressionrise/diskcorder/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/expressionrise/diskcorder?style=flat" /></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white" />
-  <a href="package.json"><img alt="Electron" src="https://img.shields.io/badge/Electron-42-47848F?logo=electron&logoColor=white" /></a>
+  <a href="package.json"><img alt="Electron" src="https://img.shields.io/github/package-json/dependency-version/expressionrise/diskcorder/dev/electron?logo=electron&logoColor=white&label=electron&color=47848F" /></a>
   <a href="#install"><img alt="Node 22.12+" src="https://img.shields.io/badge/Node-%E2%89%A522.12-339933?logo=node.js&logoColor=white" /></a>
   <a href="#contributing"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" /></a>
 </p>

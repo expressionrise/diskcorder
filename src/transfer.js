@@ -105,11 +105,22 @@ async function transfer({ srcPath, destDir, move, conflict, signal, onProgress }
   };
 
   if (conflict === 'replace') await fsp.rm(dstPath, { recursive: true, force: true }).catch(() => {});
-  await copyRecursive(srcPath, dstPath, signal, onBytes);
+  try {
+    await copyRecursive(srcPath, dstPath, signal, onBytes);
+  } catch (err) {
+    // Cancel/error: remove whatever was already written for this item (the
+    // destination did not exist before this transfer), never touch the source.
+    await fsp.rm(dstPath, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
   if (onProgress) onProgress({ copied: total, total });
 
   if (move) {
-    // Only delete the source once the copy fully succeeded.
+    // Only delete the source once the copy fully succeeded AND the destination
+    // holds the same number of bytes.
+    if ((await measure(dstPath)) !== total) {
+      throw new Error('The copy does not match the source size; the original was kept.');
+    }
     await fsp.rm(srcPath, { recursive: true, force: true });
   }
   return { status: 'done', dstPath };

@@ -40,18 +40,22 @@ async function backupFile(src, dst, ctx) {
   }
 
   stats.current = path.basename(src);
+  const tmp = dst + '.diskcorder-part';
   try {
     await fsp.mkdir(path.dirname(dst), { recursive: true }).catch(() => {});
     const rs = fs.createReadStream(src, { highWaterMark: HIGH_WATER, signal });
     rs.on('data', (c) => { stats.copiedBytes += c.length; onProgress(stats); });
-    const ws = fs.createWriteStream(dst);
+    // Write to a side file and rename into place, so a cancel/error never
+    // destroys the previous good copy at the destination.
+    const ws = fs.createWriteStream(tmp);
     await pipeline(rs, ws, { signal });
-    await fsp.utimes(dst, sst.atime, sst.mtime).catch(() => {}); // keep mtime so next run skips it
+    await fsp.utimes(tmp, sst.atime, sst.mtime).catch(() => {}); // keep mtime so next run skips it
+    await fsp.rename(tmp, dst);
     stats.copied++;
     if (stats.files.length < MAX_LOGGED_FILES) stats.files.push(path.relative(ctx.srcBase, src));
     onProgress(stats);
   } catch (err) {
-    await fsp.rm(dst, { force: true }).catch(() => {}); // drop partial file
+    await fsp.rm(tmp, { force: true }).catch(() => {}); // drop partial file
     if (signal.aborted || err.name === 'AbortError' || err.message === 'aborted') throw err;
     stats.errors++;
   }

@@ -23,6 +23,19 @@ function assertStr(v, label = 'value', max = 1000) {
   return v;
 }
 
+// Join a catalog-relative path onto a drive root, refusing anything that would
+// land outside the root (catalog imports are untrusted: "..", absolute paths).
+function isInside(parent, child) {
+  const rel = path.relative(parent, child);
+  return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+function safeJoin(root, rel) {
+  if (!root || typeof rel !== 'string' || !rel) return null;
+  const base = path.resolve(root);
+  const full = path.resolve(base, rel);
+  return isInside(base, full) ? full : null;
+}
+
 // ---- single instance ------------------------------------------------------
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -86,7 +99,7 @@ function registerThumbProtocol() {
       const u = new URL(request.url); // thumbcache://media/<volumeId>/<entryId>.<ext>
       const rel = decodeURIComponent(u.pathname).replace(/^[\\/]+/, '');
       const file = path.normalize(path.join(root, rel));
-      if (!file.startsWith(root)) return new Response('forbidden', { status: 403 });
+      if (file !== root && !file.startsWith(root + path.sep)) return new Response('forbidden', { status: 403 });
       const data = await fsp.readFile(file).catch(() => null);
       if (!data) return new Response('not found', { status: 404 });
       const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
@@ -253,11 +266,17 @@ ipcMain.handle('drive:scan', async (_e, { root, name, existingVolumeId }) => {
   if (!fs.existsSync(root)) {
     return { ok: false, error: `That path isn't reachable right now: ${root}` };
   }
+  if (scanControl) return { ok: false, error: 'A scan is already running.' };
   scanControl = makeScanControl();
   try {
     const { entries, skipped } = await scanner.scan(root, (count, current) => {
       send('scan:progress', { count, current });
     }, scanControl);
+    // An unreadable root (drive yanked mid-scan) yields an empty result; don't
+    // let it wipe an existing catalog and its notes/tags.
+    if (existingVolumeId && !entries.length && skipped) {
+      return { ok: false, error: 'The drive could not be read, so the catalog was left unchanged.' };
+    }
     const meta = {
       name, root_path: root,
       scanned_at: new Date().toISOString(),
@@ -348,7 +367,8 @@ ipcMain.handle('file:test', async (_e, id) => {
   if (!entry || entry.is_dir) return { ok: false, status: 'error', detail: 'Not a file.' };
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, status: 'offline' };
-  const src = path.join(vol.root_path, entry.rel_path);
+  const src = safeJoin(vol.root_path, entry.rel_path);
+  if (!src) return { ok: false, status: 'error', detail: 'Invalid path in catalog.' };
 
   let st;
   try { st = await fsp.stat(src); }
@@ -403,9 +423,13 @@ ipcMain.handle('entries:realRename', (_e, id, newName) => {
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
 
-  const oldFull = path.join(vol.root_path, entry.rel_path);
+  const oldFull = safeJoin(vol.root_path, entry.rel_path);
+  if (!oldFull) return { ok: false, error: 'Invalid path in catalog.' };
   if (!fs.existsSync(oldFull)) {
     return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
+  }
+  if (!newName.trim() || newName === '.' || newName === '..' || /[. ]$/.test(newName)) {
+    return { ok: false, error: 'That is not a valid file name.' };
   }
   if (/[\\/:*?"<>|]/.test(newName)) {
     return { ok: false, error: 'That name contains characters the filesystem won\'t allow.' };
@@ -442,9 +466,16 @@ ipcMain.handle('entries:realDelete', async (_e, id) => {
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
 
-  const full = path.join(vol.root_path, entry.rel_path);
-  if (!fs.existsSync(full)) {
-    return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
+  const full = safeJoin(vol.root_path, entry.rel_path);
+  if (!full) return { ok: false, error: 'Invalid path in catalog.' };
+  let st;
+  try { st = await fsp.lstat(full); }
+  catch { return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' }; }
+  // The drive letter may now belong to a different disk, or the file may have
+  // changed since the last scan - refuse to delete something that isn't what
+  // the catalog describes.
+  if (!!entry.is_dir !== st.isDirectory() || (!entry.is_dir && entry.size && st.size !== entry.size)) {
+    return { ok: false, error: 'What is on disk no longer matches the catalog (is this the right drive?). Update the drive and try again.' };
   }
   try {
     await fsp.rm(full, { recursive: !!entry.is_dir, force: true });
@@ -464,8 +495,8 @@ function realPathFor(id) {
   if (!entry) return null;
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return null;
-  const full = path.join(vol.root_path, entry.rel_path);
-  return fs.existsSync(full) ? full : null;
+  const full = safeJoin(vol.root_path, entry.rel_path);
+  return full && fs.existsSync(full) ? full : null;
 }
 
 ipcMain.handle('entries:reveal', (_e, id) => {
@@ -521,6 +552,7 @@ function makePauseGate() {
     wait()   { return paused ? new Promise(r => waiters.push(r)) : Promise.resolve(); }
   };
 }
+const ensureJobs = new Map(); // entryId -> in-flight thumbs:ensure promise
 const kindOf = (ext) => thumbs.isVideo(ext) ? 'video' : (thumbs.isImage(ext) ? 'image' : null);
 
 // Generate (if missing) the thumb — plus a hover preview for videos — for one
@@ -533,21 +565,30 @@ ipcMain.handle('thumbs:ensure', async (_e, id) => {
   if (!kind) return { ok: false };
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'offline' };
-  const src = path.join(vol.root_path, entry.rel_path);
-  if (!fs.existsSync(src)) return { ok: false, error: 'offline' };
+  const src = safeJoin(vol.root_path, entry.rel_path);
+  if (!src || !fs.existsSync(src)) return { ok: false, error: 'offline' };
 
+  // One job per entry at a time: hovering the same row repeatedly (or the row
+  // plus the detail pane) must not spawn parallel ffmpegs writing the same file.
+  if (ensureJobs.has(id)) return ensureJobs.get(id);
   const ac = new AbortController();
-  try {
-    if (!(await thumbs.hasThumb(entry.volume_id, id))) {
-      await thumbs.generateThumb(src, entry.volume_id, id, ac.signal, kind);
+  const job = (async () => {
+    try {
+      if (!(await thumbs.hasThumb(entry.volume_id, id))) {
+        await thumbs.generateThumb(src, entry.volume_id, id, ac.signal, kind);
+      }
+      if (kind === 'video' && !(await thumbs.hasPreview(entry.volume_id, id))) {
+        await thumbs.generatePreview(src, entry.volume_id, id, ac.signal);
+      }
+      return { ok: true, volumeId: entry.volume_id, kind };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    } finally {
+      ensureJobs.delete(id);
     }
-    if (kind === 'video' && !(await thumbs.hasPreview(entry.volume_id, id))) {
-      await thumbs.generatePreview(src, entry.volume_id, id, ac.signal);
-    }
-    return { ok: true, volumeId: entry.volume_id, kind };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+  })();
+  ensureJobs.set(id, job);
+  return job;
 });
 
 ipcMain.handle('thumbs:ready', () => thumbs.ffmpegAvailable());
@@ -573,6 +614,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
     return { ok: false, error: 'Drive is not connected.' };
   }
+  if (thumbAbort) return { ok: false, error: 'Preview generation is already running.' };
   const media = db.getMediaEntries(volumeId, thumbs.MEDIA_EXTS);
   if (!media.length) return { ok: true, total: 0 };
 
@@ -592,6 +634,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
     return { ok: true, total: 0, done: 0 };
   }
 
+  if (thumbAbort) return { ok: false, error: 'Preview generation is already running.' };
   thumbAbort = new AbortController();
   thumbGate = makePauseGate();
   const signal = thumbAbort.signal;
@@ -606,9 +649,9 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
       const m = queue.shift();
       if (!m) break;
       const kind = kindOf(m.ext);
-      const src = path.join(vol.root_path, m.rel_path);
+      const src = safeJoin(vol.root_path, m.rel_path);
       try {
-        if (kind && fs.existsSync(src)) {
+        if (kind && src && fs.existsSync(src)) {
           if (!(await thumbs.hasThumb(volumeId, m.id))) await thumbs.generateThumb(src, volumeId, m.id, signal, kind);
           if (previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id))) {
             await thumbs.generatePreview(src, volumeId, m.id, signal);
@@ -621,10 +664,13 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   };
 
   const queue = pending.slice();
-  await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
-  send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
-  thumbAbort = null;
-  thumbGate = null;
+  try {
+    await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
+  } finally {
+    send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
+    thumbAbort = null;
+    thumbGate = null;
+  }
   return { ok: true, total, done, canceled: signal.aborted };
 });
 
@@ -685,10 +731,17 @@ ipcMain.handle('transfer:start', async (_e, { entryId, destVolumeId, move, confl
   if (!entry) return { ok: false, error: 'Entry not found.' };
   const srcVol = db.getVolume(entry.volume_id);
   const destVol = db.getVolume(destVolumeId);
-  if (!srcVol || !destVol) return { ok: false, error: 'Drive not found.' };
+  if (!srcVol || !destVol || !srcVol.root_path || !destVol.root_path) return { ok: false, error: 'Drive not found.' };
 
-  const srcPath = path.join(srcVol.root_path, entry.rel_path);
+  const srcPath = safeJoin(srcVol.root_path, entry.rel_path);
+  if (!srcPath) return { ok: false, error: 'Invalid path in catalog.' };
   const destDir = destVol.root_path;
+  // Copying/moving a folder into itself recurses forever; "replace" onto the
+  // same path would delete the source before copying it.
+  const destTarget = path.resolve(destDir, path.basename(srcPath));
+  if (destTarget.toLowerCase() === srcPath.toLowerCase() || isInside(srcPath, path.resolve(destDir)) || path.resolve(destDir).toLowerCase() === srcPath.toLowerCase()) {
+    return { ok: false, error: 'The destination is the same as, or inside, the source.' };
+  }
 
   const opId = nextOpId++;
   const ac = new AbortController();
@@ -744,6 +797,10 @@ ipcMain.handle('backup:start', async (_e, { srcVolumeId, destVolumeId, items }) 
   // can share one destination without colliding.
   const safeName = (src.name || 'Backup').replace(/[\\/:*?"<>|]/g, '_');
   const destBase = path.join(dest.root_path, safeName);
+  if (destBase.toLowerCase() === path.resolve(src.root_path).toLowerCase() || isInside(path.resolve(src.root_path), path.resolve(destBase))) {
+    return { ok: false, error: 'The backup destination is inside the source drive.' };
+  }
+  if (backupAbort) return { ok: false, error: 'A backup is already running.' };
 
   backupAbort = new AbortController();
   let last = 0;
@@ -825,9 +882,10 @@ ipcMain.handle('backup:runPath', async (_e, { source, dest, name, jobId }) => {
   if (!fs.existsSync(dest)) return { ok: false, error: 'Destination folder is not reachable.' };
   const srcBase = path.resolve(source);
   const destBase = path.join(path.resolve(dest), path.basename(srcBase) || 'Backup');
-  if (path.resolve(destBase).startsWith(srcBase + path.sep)) {
+  if (destBase.toLowerCase() === srcBase.toLowerCase() || isInside(srcBase, path.resolve(destBase))) {
     return { ok: false, error: 'Destination is inside the source folder.' };
   }
+  if (backupAbort) return { ok: false, error: 'A backup is already running.' };
 
   backupAbort = new AbortController();
   let last = 0;

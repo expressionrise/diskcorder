@@ -53,6 +53,18 @@
       {
         "from": "node_modules/ffmpeg-static/ffmpeg.exe",
         "to": "ffmpeg.exe"
+      },
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg.exe.LICENSE",
+        "to": "ffmpeg-LICENSE.txt"
+      },
+      {
+        "from": "node_modules/ffmpeg-static/ffmpeg.exe.README",
+        "to": "ffmpeg-README.txt"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
       }
     ],
     "win": {

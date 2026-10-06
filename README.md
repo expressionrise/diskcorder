@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/expressionrise/diskcorder" /></a>
+  <a href="https://github.com/expressionrise/diskcorder/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/expressionrise/diskcorder/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="package.json"><img alt="Version" src="https://img.shields.io/github/package-json/v/expressionrise/diskcorder?color=d4af37&label=version" /></a>
   <a href="https://github.com/expressionrise/diskcorder/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/expressionrise/diskcorder" /></a>
   <a href="https://github.com/expressionrise/diskcorder/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/expressionrise/diskcorder?style=flat" /></a>
@@ -256,9 +257,25 @@ and pull requests all help.
 - **Match the style.** Plain HTML/CSS/JS in `src/renderer/`; theming stays in CSS
   variables in `styles.css`. Keep changes small and reviewable.
 - **Run it locally** with `npm install && npm start` (see [Install](#install)).
-- Good first contributions live in the [Roadmap](#roadmap) above.
+- Good first contributions live in the [Roadmap](#roadmap) above. See also
+  [CONTRIBUTING.md](CONTRIBUTING.md).
 
 By contributing you agree your work is licensed under the project's MIT license.
+
+## Third-party software
+
+The Windows builds bundle a static **FFmpeg** binary (GPL v3), run as a separate
+process for thumbnails, previews and media info. Diskcorder's own code stays MIT. The
+license text, build info and source links ship with every release (and see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+
+## Releases and code signing
+
+Releases (installer + portable exe) are built from this repo by GitHub Actions when a
+`v*` tag is pushed — see [`.github/workflows/release.yml`](.github/workflows/release.yml).
+Code signing is being set up; until then Windows SmartScreen may warn about an unknown
+publisher. Details in [CODE_SIGNING.md](CODE_SIGNING.md). Report security issues
+privately — see [SECURITY.md](SECURITY.md).
 
 ## License
 

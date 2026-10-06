@@ -3297,16 +3297,21 @@ function showCapacityResults(driveName, claimed, actual, percent, verdict, detai
 
   const item = document.createElement('div');
   item.className = 'capacity-result ' + verdictClass;
-  item.innerHTML = `
-    <div class="capacity-verdict">${verdict}</div>
-    <div class="capacity-detail">${detail}</div>
-    <div class="capacity-info">
-      <div>Drive: ${driveName}</div>
-      <div>Claimed capacity: ${claimed}</div>
-      <div>Actual capacity: ${actual}</div>
-      <div>Real capacity: ${percent}%</div>
-    </div>
-  `;
+  // Built with textContent: the drive name is user/import supplied.
+  const addDiv = (parent, cls, text) => {
+    const d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = text;
+    parent.appendChild(d);
+    return d;
+  };
+  addDiv(item, 'capacity-verdict', verdict);
+  addDiv(item, 'capacity-detail', detail);
+  const info = addDiv(item, 'capacity-info', '');
+  addDiv(info, '', `Drive: ${driveName}`);
+  addDiv(info, '', `Claimed capacity: ${claimed}`);
+  addDiv(info, '', `Actual capacity: ${actual}`);
+  addDiv(info, '', `Real capacity: ${percent}%`);
   list.appendChild(item);
 }
 

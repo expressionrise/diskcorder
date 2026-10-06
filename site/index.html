@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diskcorder — an offline catalog for your external drives</title>
+  <meta name="description" content="Map your USB and external drives once, then browse, search, annotate and rename them offline. A free, open source, local-first disk cataloguer for Windows.">
+  <meta name="theme-color" content="#1a1a1a">
+  <link rel="icon" type="image/png" href="assets/icon.png">
+  <meta property="og:title" content="Diskcorder — an offline catalog for your external drives">
+  <meta property="og:description" content="Know what's on every drive on your shelf — even when it's unplugged. Free and open source.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="assets/app-detail.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <style>
+    :root {
+      --bg: #141414;
+      --surface: #1d1d1d;
+      --surface-2: #262626;
+      --line: #3a3a3a;
+      --text: #e6e6e6;
+      --dim: #b0b0b0;
+      --accent: #e8a020;
+      --accent-ink: #1a0e00;
+      --radius: 10px;
+      --max: 1120px;
+      --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: var(--sans); font-size: 17px; line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+
+    /* header */
+    header.top { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+    header.top .wrap { display: flex; align-items: center; gap: 20px; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; font-size: 15px; }
+    .brand:hover { text-decoration: none; }
+    .brand img { width: 28px; height: 28px; }
+    nav { margin-left: auto; display: flex; gap: 22px; align-items: center; font-size: 15px; }
+    nav a { color: var(--dim); }
+    nav a:hover { color: var(--text); text-decoration: none; }
+    @media (max-width: 640px) { nav a.hide-sm { display: none; } }
+
+    /* buttons */
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 8px;
+      font-weight: 600; font-size: 16px; border: 1px solid var(--line); color: var(--text); background: var(--surface-2);
+      cursor: pointer;
+    }
+    .btn:hover { text-decoration: none; border-color: #666; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+    .btn.primary:hover { filter: brightness(1.08); }
+    .btn.small { padding: 8px 16px; font-size: 14px; }
+
+    /* hero */
+    .hero { padding: 72px 0 40px; text-align: center; }
+    .hero img.logo { width: 96px; height: 96px; margin-bottom: 18px; }
+    h1 { font-size: clamp(34px, 6vw, 56px); line-height: 1.1; margin: 0 0 18px; letter-spacing: -.02em; }
+    h1 em { font-style: normal; color: var(--accent); }
+    .lead { max-width: 680px; margin: 0 auto 30px; color: var(--dim); font-size: clamp(18px, 2.4vw, 21px); }
+    .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .fine { margin-top: 14px; color: var(--dim); font-size: 14px; }
+    .shot { margin: 48px auto 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
+    .shot img { display: block; width: 100%; height: auto; }
+
+    /* sections */
+    section { padding: 72px 0; }
+    section.alt { background: var(--surface); border-block: 1px solid var(--line); }
+    h2 { font-size: clamp(26px, 4vw, 36px); line-height: 1.2; margin: 0 0 12px; letter-spacing: -.01em; }
+    .sub { color: var(--dim); max-width: 640px; margin: 0 0 40px; }
+    .center { text-align: center; } .center .sub { margin-inline: auto; }
+
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+    .card { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+    section.alt .card { background: var(--bg); }
+    .card h3 { margin: 0 0 6px; font-size: 18px; }
+    .card p { margin: 0; color: var(--dim); font-size: 15.5px; }
+    .card .ic { font-size: 26px; display: block; margin-bottom: 10px; }
+
+    .steps { counter-reset: s; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .step { position: relative; padding: 22px 22px 22px 70px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+    .step::before {
+      counter-increment: s; content: counter(s); position: absolute; left: 20px; top: 20px; width: 34px; height: 34px;
+      border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-weight: 800; display: grid; place-items: center;
+    }
+    .step h3 { margin: 0 0 4px; font-size: 18px; } .step p { margin: 0; color: var(--dim); font-size: 15.5px; }
+
+    .split { display: grid; gap: 40px; grid-template-columns: 1fr 1.2fr; align-items: center; }
+    .split .shot { margin: 0; }
+    @media (max-width: 820px) { .split { grid-template-columns: 1fr; } }
+    ul.tick { list-style: none; padding: 0; margin: 18px 0 0; }
+    ul.tick li { padding-left: 28px; position: relative; margin-bottom: 10px; color: var(--dim); }
+    ul.tick li::before { content: "✓"; position: absolute; left: 0; color: var(--accent); font-weight: 800; }
+    ul.tick strong { color: var(--text); }
+
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; }
+    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: 14.5px; color: var(--dim); background: var(--surface-2); }
+
+    details { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 10px; }
+    summary { cursor: pointer; font-weight: 600; }
+    details p { color: var(--dim); margin: 10px 0 0; font-size: 15.5px; }
+    code { font-family: var(--mono); font-size: .9em; background: var(--bg); padding: 2px 6px; border-radius: 4px; }
+
+    .final { text-align: center; }
+    footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--dim); font-size: 14.5px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; }
+    footer a { color: var(--dim); } footer a:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="assets/icon.png" alt="" width="28" height="28">Diskcorder</a>
+    <nav>
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#how">How it works</a>
+      <a class="hide-sm" href="#faq">FAQ</a>
+      <a class="btn primary small" href="https://github.com/expressionrise/diskcorder/releases/latest">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <img class="logo" src="assets/icon.png" alt="Diskcorder icon" width="96" height="96">
+    <h1>Know what's on every drive,<br><em>even when it's unplugged.</em></h1>
+    <p class="lead">Diskcorder maps your USB and external drives once, then lets you browse, search, annotate and rename everything offline. Free, open source, and nothing ever leaves your computer.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/expressionrise/diskcorder/releases/latest">⬇ Download for Windows</a>
+      <a class="btn" href="https://github.com/expressionrise/diskcorder">View on GitHub</a>
+    </div>
+    <p class="fine">Installer or portable .exe · MIT licensed · Windows 10/11</p>
+    <div class="shot">
+      <img src="assets/app-detail.png" alt="Diskcorder showing a drive's folders, frequently opened folders, video thumbnails and the detail pane with duration, resolution and codec" width="1919" height="1113">
+    </div>
+  </div>
+
+  <section id="why" class="alt">
+    <div class="wrap center">
+      <h2>"Which drive has the Italy footage?"</h2>
+      <p class="sub">If your work lives on a shelf of USB hard drives, answering that means plugging in disks one by one. Diskcorder keeps a searchable map of every drive, plus your own notes and labels, in one local file.</p>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <h2 class="center">How it works</h2>
+      <p class="sub center">Three steps, and the drive can go back on the shelf.</p>
+      <div class="steps">
+        <div class="step"><h3>Map a drive</h3><p>Plug it in, give it a name and let Diskcorder scan every file and folder. Pause or cancel any time.</p></div>
+        <div class="step"><h3>Browse &amp; annotate</h3><p>Add notes, labels and tags. Generate thumbnails for videos and images with one click.</p></div>
+        <div class="step"><h3>Search anywhere</h3><p>Find any file across all your drives — with the drive unplugged. It tells you which drive and folder.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" class="alt">
+    <div class="wrap">
+      <h2>Everything you need to keep drives under control</h2>
+      <p class="sub">Built for people with a lot of footage, photos and archives spread over many disks.</p>
+      <div class="grid">
+        <div class="card"><span class="ic">🔌</span><h3>Offline catalog</h3><p>Browse a drive's full tree while it's disconnected. A live connected / offline badge shows what's plugged in.</p></div>
+        <div class="card"><span class="ic">🔎</span><h3>Cross-drive search</h3><p>Search names, notes, aliases and tags across every mapped drive at once, or scope it to one.</p></div>
+        <div class="card"><span class="ic">🎞️</span><h3>Smart thumbnails</h3><p>Video stills skip black intros and blurry frames. Hover a video to play a short preview clip.</p></div>
+        <div class="card"><span class="ic">🗺️</span><h3>Space map</h3><p>A colored treemap shows what's eating space. Click a folder to drill in.</p></div>
+        <div class="card"><span class="ic">♊</span><h3>Duplicates</h3><p>Find repeated files across drives, see how much space is reclaimable, and bulk-delete the extras — always keeping one copy.</p></div>
+        <div class="card"><span class="ic">🩺</span><h3>Test Drive</h3><p>Verify a drive's real capacity to catch fake USB sticks, and test individual files for damage.</p></div>
+        <div class="card"><span class="ic">💾</span><h3>Backup &amp; copy</h3><p>Additive backup between drives that never deletes at the destination, plus copy/move with progress and conflict handling.</p></div>
+        <div class="card"><span class="ic">🏷️</span><h3>Notes, labels &amp; tags</h3><p>Give files friendly names without touching the disk, or rename for real when the drive is connected. Click a tag to list everything with it.</p></div>
+        <div class="card"><span class="ic">📍</span><h3>Remembers where you go</h3><p>Folders you open often get a mark that grows with use, and a Frequent list gives you one-click shortcuts.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="views">
+    <div class="wrap split">
+      <div>
+        <h2>Folders, list or gallery</h2>
+        <p class="sub" style="margin-bottom:0">Switch how you look at a drive in one click. Sort by name, size, date, label or tag, and load huge folders incrementally as you scroll.</p>
+        <ul class="tick">
+          <li><strong>Folders</strong> — the familiar tree, with a folder tree in the sidebar.</li>
+          <li><strong>List</strong> — flat filenames with clickable locations.</li>
+          <li><strong>Gallery</strong> — a grid of large thumbnail cards.</li>
+          <li><strong>Large files</strong> — find the biggest files to clear first.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="assets/app-gallery.png" alt="Gallery view: a responsive grid of thumbnail cards" width="1919" height="1113" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section id="privacy" class="alt">
+    <div class="wrap center">
+      <h2>Local-first, by design</h2>
+      <p class="sub">Your catalog is a single SQLite file on your machine. There are no accounts, no cloud and no telemetry — nothing is ever uploaded. Export a drive's catalog (with notes, tags and thumbnails) to a file and import it on another computer, or save it on the drive itself.</p>
+      <div class="pills">
+        <span class="pill">Free &amp; open source (MIT)</span>
+        <span class="pill">No account</span>
+        <span class="pill">No cloud</span>
+        <span class="pill">Installer &amp; portable</span>
+        <span class="pill">Electron + SQLite</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap" style="max-width:780px">
+      <h2 class="center">Questions</h2>
+      <p class="sub center">Short answers.</p>
+      <details><summary>Is it really free?</summary><p>Yes. Diskcorder is open source under the MIT license — free to use, modify and share. The source is on <a href="https://github.com/expressionrise/diskcorder">GitHub</a>.</p></details>
+      <details><summary>Windows says "unknown publisher" when I run it. Is that safe?</summary><p>That's Windows SmartScreen, which warns about apps that aren't code-signed yet. You can verify the code on GitHub and build it yourself. Choose "More info → Run anyway" to continue.</p></details>
+      <details><summary>Which should I download — Setup or Portable?</summary><p>The Setup installs Diskcorder like any other app. The Portable build is a single <code>.exe</code> you can run without installing.</p></details>
+      <details><summary>Does it change or upload my files?</summary><p>No upload, ever. Scanning only reads. Files are changed only when you explicitly rename, copy, move, back up or delete something with the drive connected, and destructive actions ask for confirmation.</p></details>
+      <details><summary>Do I need ffmpeg?</summary><p>It's bundled. It's used for thumbnails, preview clips and media info; without it the app still runs, just without those.</p></details>
+      <details><summary>Can I use my catalog on another computer?</summary><p>Yes. Export a drive's catalog (notes, tags and thumbnails included) and import it elsewhere — it stays browsable even if that machine has never seen the drive.</p></details>
+    </div>
+  </section>
+
+  <section class="alt final">
+    <div class="wrap">
+      <h2>Map your first drive in a minute</h2>
+      <p class="sub" style="margin-inline:auto">Download Diskcorder, plug in a drive, and stop playing "which disk was it on?"</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/expressionrise/diskcorder/releases/latest">⬇ Download for Windows</a>
+        <a class="btn" href="https://github.com/expressionrise/diskcorder/issues">Report an issue</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 <a href="https://expressionrise.com/">expressionrise</a> · MIT licensed</span>
+    <span><a href="https://github.com/expressionrise/diskcorder">GitHub</a> · <a href="https://github.com/expressionrise/diskcorder/releases">Releases</a> · <a href="https://github.com/expressionrise/diskcorder#contributing">Contribute</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

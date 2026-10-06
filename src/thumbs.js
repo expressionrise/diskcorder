@@ -130,6 +130,37 @@ function runNow(args, signal, timeoutMs) {
   });
 }
 
+// Read container/stream facts (duration, resolution, codecs, fps, bitrate) from
+// ffmpeg's banner — no ffprobe needed. Resolves null if it can't be read.
+function probeInfo(src, signal) {
+  return new Promise(resolve => {
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', '-hide_banner', '-i', src], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    proc.stderr.on('data', d => { err += d.toString(); if (err.length > 32000) err = err.slice(0, 16000) + err.slice(-8000); });
+    const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const guard = setTimeout(onAbort, 30000);
+    const done = (v) => { clearTimeout(guard); if (signal) signal.removeEventListener('abort', onAbort); resolve(v); };
+    proc.on('error', () => done(null));
+    proc.on('close', () => {
+      const info = {};
+      const d = err.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (d) info.duration = (+d[1]) * 3600 + (+d[2]) * 60 + parseFloat(d[3]);
+      const br = err.match(/bitrate:\s*(\d+)\s*kb\/s/);
+      if (br) info.bitrate = +br[1];
+      const v = err.match(/Stream #\S+.*?Video:\s*([A-Za-z0-9_]+)[^\n]*?,\s*(\d{2,5})x(\d{2,5})[^\n]*/);
+      if (v) {
+        info.vcodec = v[1]; info.width = +v[2]; info.height = +v[3];
+        const fps = v[0].match(/([\d.]+)\s*fps/);
+        if (fps) info.fps = parseFloat(fps[1]);
+      }
+      const a = err.match(/Stream #\S+.*?Audio:\s*([A-Za-z0-9_]+)/);
+      if (a) info.acodec = a[1];
+      done(Object.keys(info).length ? info : null);
+    });
+  });
+}
+
 // Parse "Duration: HH:MM:SS.xx" from ffmpeg's stderr (no ffprobe needed).
 function probeDuration(src, signal) {
   return new Promise(resolve => {
@@ -407,7 +438,7 @@ async function removeEntry(volumeId, entryId) {
 
 module.exports = {
   init, isVideo, isImage, isMedia, ffmpegAvailable,
-  generateThumb, generatePreview, pickBestTimestamp, scoreFrame,
+  generateThumb, generatePreview, pickBestTimestamp, scoreFrame, probeInfo,
   hasThumb, hasPreview, countThumbs, cacheSize, checkMedia, exportThumbs, importThumbs, remapCache, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
   VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,

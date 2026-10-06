@@ -4,6 +4,19 @@
 
 <h1 align="center">Diskcorder</h1>
 
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/expressionrise/diskcorder" /></a>
+  <a href="package.json"><img alt="Version" src="https://img.shields.io/github/package-json/v/expressionrise/diskcorder?color=d4af37&label=version" /></a>
+  <a href="https://github.com/expressionrise/diskcorder/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/expressionrise/diskcorder" /></a>
+  <a href="https://github.com/expressionrise/diskcorder/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/expressionrise/diskcorder?style=flat" /></a>
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white" />
+  <a href="package.json"><img alt="Electron" src="https://img.shields.io/github/package-json/dependency-version/expressionrise/diskcorder/dev/electron?logo=electron&logoColor=white&label=electron&color=47848F" /></a>
+  <a href="#install"><img alt="Node 22.12+" src="https://img.shields.io/badge/Node-%E2%89%A522.12-339933?logo=node.js&logoColor=white" /></a>
+  <a href="#contributing"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" /></a>
+</p>
+
+**Website: [expressionrise.github.io/diskcorder](https://expressionrise.github.io/diskcorder/)**
+
 **Map your external drives once, then browse, annotate, and rename them offline.**
 A local-first Electron + SQLite disk cataloguer for creators with footage spread
 across many USB HDDs.
@@ -41,9 +54,18 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   Hover a video to play a short preview clip sampled across the file. The batch can
   be **paused, resumed, or canceled** from the ops drawer.
 - **Three browsing views** — switch the file browser between **Folders** (tree),
-  **List** (flat filenames + clickable locations), and **Gallery** (large thumbnail
-  tiles). Sort by name, size, date, label, or tag. A **folder tree in the left rail**
+  **List** (flat filenames + clickable locations), and **Gallery** (a responsive grid
+  of large thumbnail cards). Sort by name, size, date, label, or tag. A **folder tree in the left rail**
   lets you jump straight to any folder. Big lists load incrementally as you scroll.
+- **Smart thumbnails** — video stills aren't just the first frame (often black): six
+  positions are probed and the sharpest, best-exposed one wins. Run **Previews** again
+  on an up-to-date drive to re-create existing stills with the smarter picker.
+- **Media info** — duration, resolution, frame rate, codecs and bitrate of a
+  video/image in the detail pane (drive connected, ffmpeg available).
+- **Where you go often** — folders you open a lot get a **mark** (dot, emoji, or
+  none — the **Marks** button in the header) that grows with frequency and recency,
+  plus a **Frequent** shortcut list in the left rail.
+- **Click a tag** to list everything that carries it.
 - **Large files** — a dedicated tab listing the biggest files, filterable by size and
   modified date, sortable, and optionally grouped by year — to find what to clear.
 - **Test file for damage** — from a file's detail panel, read the real file off the
@@ -213,9 +235,9 @@ The app icon is generated from `scripts/make-icon.js` (`node scripts/make-icon.j
   catalogs (today's escaped `LIKE` keeps intuitive substring matching).
 - **Volume serial fingerprint** — detect a re-inserted drive by its hardware volume
   serial (today the `.diskcorder-id` marker file is used).
-- **Fix thumbnail crashes** — find the root cause so auto-generation can be re-enabled.
-- **Video metadata** — surface duration/resolution/codec in the detail pane.
-- **Filter by tag** — click a tag to list everything that carries it.
+- **Re-enable auto thumbnails** — the crash causes (unbounded ffmpeg fan-out, truncated
+  outputs) are fixed and generation is now capped at 3 concurrent processes; auto-generation
+  on connect stays off until it has had more real-world testing.
 - **Pick a destination subfolder** for copy/move (today it lands at the drive root).
 - **Live catalog sync on copy/move** — insert destination rows without needing a
   re-scan.

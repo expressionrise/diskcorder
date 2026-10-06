@@ -359,6 +359,18 @@ function readTest(srcPath, signal) {
 }
 
 let fileTestAbort = null;
+// Media facts (duration, resolution, codecs…) for the detail pane. Needs the drive connected.
+ipcMain.handle('entries:mediaInfo', async (_e, id) => {
+  assertInt(id);
+  const entry = db.getEntry(id);
+  if (!entry || entry.is_dir || !kindOf(entry.ext)) return { ok: false };
+  const vol = db.getVolume(entry.volume_id);
+  const src = vol && vol.root_path ? safeJoin(vol.root_path, entry.rel_path) : null;
+  if (!src || !fs.existsSync(src) || !(await thumbs.ffmpegAvailable())) return { ok: false };
+  const info = await thumbs.probeInfo(src);
+  return info ? { ok: true, info } : { ok: false };
+});
+
 ipcMain.handle('file:test:cancel', () => { if (fileTestAbort) fileTestAbort.abort(); return true; });
 
 ipcMain.handle('file:test', async (_e, id) => {

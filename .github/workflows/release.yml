@@ -1,0 +1,50 @@
+name: Release
+
+# Builds the Windows installer + portable exe and attaches them to a GitHub Release.
+# Trigger: push a tag like v0.3.0 (the tag must match the version in package.json).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if [ "refs/tags/v$v" != "$GITHUB_REF" ]; then
+            echo "Tag $GITHUB_REF does not match package.json version $v"
+            exit 1
+          fi
+      - name: Build installer and portable exe
+        run: npx electron-builder --win --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diskcorder-windows
+          path: |
+            dist/*-Setup.exe
+            dist/*-Portable.exe
+      # TODO(code signing): once the SignPath application is approved, sign the
+      # artifacts here (SignPath GitHub Action) before they are released.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*-Setup.exe
+            dist/*-Portable.exe

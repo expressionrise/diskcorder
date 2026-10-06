@@ -1,4 +1,8 @@
-# Diskcorder
+<p align="center">
+  <img src="src/renderer/assets/icon.png" width="120" alt="Diskcorder icon" />
+</p>
+
+<h1 align="center">Diskcorder</h1>
 
 **Map your external drives once, then browse, annotate, and rename them offline.**
 A local-first Electron + SQLite disk cataloguer for creators with footage spread
@@ -30,13 +34,21 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   is disconnected. Drives show a **connected / offline** badge in real time.
 - **Cross-drive search** — search names, notes, and aliases across every mapped
   drive at once; results show which drive and where. Toggle "this drive" to scope it.
-- **Video thumbnails + hover preview** — every video gets a still thumbnail and a
-  short ~10-second clip sampled across the whole file. Thumbnails are generated
-  automatically in the background right after a scan; hover a thumbnail (in the list
-  or the detail pane) and it plays the preview in place. The heavier hover clips are
-  built on demand, or for a whole drive via the **Previews** button.
-- **Image thumbnails** — image files get the same on-disk thumbnail treatment and
-  show inline in the listing and detail pane.
+- **Video + image thumbnails** — every video and image gets a still thumbnail
+  (taken from the first frame). Thumbnails generate **automatically when a drive is
+  connected** and after a scan; generation is **resumable** (skips what's already
+  made) and shown by a coverage bar + live progress bar on each drive card. Hover a
+  video to play a short preview clip sampled across the file. The background batch
+  can be **paused, resumed, or canceled** from the ops drawer.
+- **Three browsing views** — switch the file browser between **Folders** (tree),
+  **List** (flat filenames + clickable locations), and **Gallery** (large thumbnail
+  tiles). Sort by name, size, date, label, or tag. A **folder tree in the left rail**
+  lets you jump straight to any folder. Big lists load incrementally as you scroll.
+- **Large files** — a dedicated tab listing the biggest files, filterable by size and
+  modified date, sortable, and optionally grouped by year — to find what to clear.
+- **Test file for damage** — from a file's detail panel, read the real file off the
+  drive to check it isn't corrupt: ffmpeg decodes videos/images, other files are read
+  end to end, with a size-vs-catalog check. Cancelable for large files.
 - **Space map** — a **Space map** tab with a WizTree/WinDirStat-style **colored
   treemap**: every file and folder sized by how much space it holds and colored by
   type. Click a folder tile to drill in, breadcrumb to come back. Folders in the
@@ -53,14 +65,16 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   drive with a confirm step, live progress, cancel, and conflict handling
   (keep both / replace / skip). Streamed, so multi-GB files are fine.
 - **Find duplicates** — a **Duplicates** tab groups files that share a name and
-  size; toggle between **all mapped drives** and just the open one, see how much
-  space is reclaimable, and delete individual copies from a chosen location.
+  size; toggle between **all mapped drives** and just the open one, and see how much
+  space is reclaimable. **Multi-select** copies with checkboxes (or "select all but
+  newest/oldest") and **bulk-delete** the redundant ones. Click any copy to preview it.
 - **Delete on disk** — remove the real file or folder from the detail pane, with a
   confirm step (drive must be connected).
 - **Open in Explorer** — jump straight to a file's real location in Windows
   Explorer from the detail pane.
 - **Export / import catalogs** — save a drive's whole catalog (with notes, aliases,
-  and tags) to a JSON file and import it on another machine or restore it later.
+  tags, **and its thumbnails**) to a JSON file and import it on another machine, so
+  the catalog stays browsable with previews even on a laptop that's never seen the drive.
 - **Pause / resume / cancel scans** — long scans can be paused, resumed, or
   canceled from the mapping overlay (canceling discards the partial catalog).
 - **Re-scan that remembers** — re-mapping a drive preserves your notes, aliases,
@@ -92,6 +106,27 @@ npm start
   `npm run rebuild`.
 - **ffmpeg is optional at runtime.** If no ffmpeg is found, the app still runs —
   video preview generation is simply disabled.
+
+### Run it locally
+
+Once the dependencies are installed, run the app straight from source:
+
+```bash
+git clone https://github.com/expressionrise/diskcorder.git
+cd diskcorder
+npm install   # one time — see gotchas above if you're behind a proxy / on Node < 22.12
+npm start     # launches the Electron app
+```
+
+`npm start` is just `electron .` — it loads `src/main.js` directly, with no build
+or bundling step. **This is the recommended way to run Diskcorder locally**: the
+install-time gotchas above (the `NODE_EXTRA_CA_CERTS` proxy bundle and the
+`NODE_OPTIONS=--experimental-require-module` flag) only apply to `npm install`, so
+once the install succeeds the app starts cleanly with no extra environment
+variables and no system warnings.
+
+To iterate on the code, just edit files under `src/` and restart `npm start`
+(quit the window and run it again) to pick up the changes.
 
 ### Building a Windows installer
 

@@ -75,17 +75,52 @@ async function ffmpegAvailable() {
   }
 }
 
-// Spawn ffmpeg with args; resolve on exit 0, reject otherwise. Abortable.
-function run(args, signal, timeoutMs) {
+// Global cap on simultaneous ffmpeg processes. On-demand requests (hovering a
+// list, the detail pane) and the batch generator all go through this, so a fast
+// mouse sweep can no longer fork dozens of ffmpegs and exhaust RAM/handles.
+const MAX_FFMPEG = 3;
+let activeFfmpeg = 0;
+const ffmpegWaiters = [];
+function acquireSlot(signal) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(resolveFfmpeg(), args, { windowsHide: true });
+    if (signal && signal.aborted) return reject(new Error('aborted'));
+    const grant = () => { activeFfmpeg++; resolve(); };
+    if (activeFfmpeg < MAX_FFMPEG) return grant();
+    const w = { grant };
+    ffmpegWaiters.push(w);
+    if (signal) signal.addEventListener('abort', () => {
+      const i = ffmpegWaiters.indexOf(w);
+      if (i >= 0) { ffmpegWaiters.splice(i, 1); reject(new Error('aborted')); }
+    }, { once: true });
+  });
+}
+function releaseSlot() {
+  activeFfmpeg--;
+  const next = ffmpegWaiters.shift();
+  if (next) next.grant();
+}
+
+// Spawn ffmpeg with args; resolve on exit 0, reject otherwise. Abortable.
+async function run(args, signal, timeoutMs) {
+  await acquireSlot(signal);
+  try { await runNow(args, signal, timeoutMs); }
+  finally { releaseSlot(); }
+}
+
+function runNow(args, signal, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     let timer = null;
     proc.stderr.on('data', d => { err += d.toString(); if (err.length > 8000) err = err.slice(-8000); });
     const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     if (timeoutMs) timer = setTimeout(onAbort, timeoutMs);
-    proc.on('error', e => { if (timer) clearTimeout(timer); reject(e); });
+    proc.on('error', e => {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      reject(e);
+    });
     proc.on('close', code => {
       if (timer) clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', onAbort);
@@ -98,13 +133,15 @@ function run(args, signal, timeoutMs) {
 // Parse "Duration: HH:MM:SS.xx" from ffmpeg's stderr (no ffprobe needed).
 function probeDuration(src, signal) {
   return new Promise(resolve => {
-    const proc = spawn(resolveFfmpeg(), ['-i', src], { windowsHide: true });
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', '-i', src], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
-    proc.stderr.on('data', d => { err += d.toString(); });
+    proc.stderr.on('data', d => { err += d.toString(); if (err.length > 16000) err = err.slice(0, 8000) + err.slice(-4000); });
     const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
-    proc.on('error', () => resolve(null));
+    const guard = setTimeout(onAbort, 30000);   // a hung drive must not hold the process forever
+    proc.on('error', () => { clearTimeout(guard); if (signal) signal.removeEventListener('abort', onAbort); resolve(null); });
     proc.on('close', () => {
+      clearTimeout(guard);
       if (signal) signal.removeEventListener('abort', onAbort);
       const m = err.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       if (!m) return resolve(null);
@@ -113,12 +150,93 @@ function probeDuration(src, signal) {
   });
 }
 
+// ---- smart still selection ------------------------------------------------
+// The first frame of a video is often black, a logo, or a fade. Instead, probe a
+// handful of positions with tiny grayscale frames and score each one (sharp,
+// contrasty, neither black nor blown out), then render the winner full size.
+
+const PROBE_W = 96, PROBE_H = 54;
+const PROBE_POINTS = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85];
+
+// Grab one tiny gray frame at `ts` as raw bytes (null if it can't be decoded).
+function grabGray(src, ts, signal) {
+  return new Promise(resolve => {
+    const proc = spawn(resolveFfmpeg(), [
+      '-nostdin', '-v', 'error', '-ss', String(ts), '-i', src, '-frames:v', '1',
+      '-vf', `scale=${PROBE_W}:${PROBE_H},format=gray`, '-f', 'rawvideo', 'pipe:1'
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const chunks = [];
+    const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const guard = setTimeout(onAbort, 20000);
+    proc.stdout.on('data', d => chunks.push(d));
+    const done = (v) => { clearTimeout(guard); if (signal) signal.removeEventListener('abort', onAbort); resolve(v); };
+    proc.on('error', () => done(null));
+    proc.on('close', () => {
+      const buf = Buffer.concat(chunks);
+      done(buf.length === PROBE_W * PROBE_H ? buf : null);
+    });
+  });
+}
+
+// Higher = a better thumbnail. Detail (edge energy) + contrast, heavily
+// discounted for near-black or near-white frames.
+function scoreFrame(px) {
+  const n = px.length;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += px[i];
+  const mean = sum / n;
+  let varSum = 0, edge = 0;
+  for (let y = 0; y < PROBE_H; y++) {
+    for (let x = 0; x < PROBE_W; x++) {
+      const v = px[y * PROBE_W + x];
+      varSum += (v - mean) * (v - mean);
+      if (x > 0) edge += Math.abs(v - px[y * PROBE_W + x - 1]);
+      if (y > 0) edge += Math.abs(v - px[(y - 1) * PROBE_W + x]);
+    }
+  }
+  const contrast = Math.sqrt(varSum / n);
+  const exposure = Math.max(0.05, Math.min(1, mean / 50, (255 - mean) / 40));
+  return (edge / n + contrast * 0.5) * exposure;
+}
+
+// Best timestamp (seconds) for a still, or 0 if it can't be decided.
+async function pickBestTimestamp(src, signal) {
+  const dur = (await probeDuration(src, signal)) || 0;
+  if (dur < 4) return 0;                        // too short to be worth probing
+  let best = 0, bestScore = -1;
+  for (const f of PROBE_POINTS) {
+    if (signal && signal.aborted) throw new Error('aborted');
+    const ts = dur * f;
+    const px = await grabGray(src, ts.toFixed(2), signal);
+    if (!px) continue;
+    const sc = scoreFrame(px);
+    if (sc > bestScore) { bestScore = sc; best = ts; }
+  }
+  return best;
+}
+
 async function generateThumb(srcPath, volumeId, entryId, signal, kind) {
   const out = thumbPath(volumeId, entryId);
   await fsp.mkdir(path.dirname(out), { recursive: true });
-  // Images and videos alike: decode the very first frame directly.
-  const args = ['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', out];
-  await run(args, signal, 60000);
+  // Images: decode directly. Videos: render the best-scoring frame (see above).
+  // Render to a temp name and rename on success, so a killed/timed-out ffmpeg
+  // never leaves a truncated .jpg that hasThumb() would treat as valid.
+  const tmpOut = path.join(path.dirname(out), `part-${entryId}-${process.pid}.jpg`);
+  try {
+    let ts = 0;
+    if (kind !== 'image') {
+      await acquireSlot(signal);
+      try { ts = await pickBestTimestamp(srcPath, signal); } catch (e) { if (e.message === 'aborted') throw e; ts = 0; }
+      finally { releaseSlot(); }
+    }
+    const seek = ts > 0 ? ['-ss', ts.toFixed(2)] : [];
+    await run([...seek, '-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', tmpOut], signal, 60000);
+    await fsp.rename(tmpOut, out);
+  } catch (e) {
+    await fsp.rm(tmpOut, { force: true }).catch(() => {});
+    throw e;
+  }
   return out;
 }
 
@@ -151,12 +269,19 @@ async function generatePreview(srcPath, volumeId, entryId, signal) {
     }
     if (made === 0) throw new Error('no frames extracted');
 
-    await run([
-      '-y', '-framerate', '1', '-start_number', '0',
-      '-i', path.join(tmp, 'f%d.jpg'),
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '10',
-      '-movflags', '+faststart', '-an', out
-    ], signal, 90000);
+    const tmpOut = path.join(path.dirname(out), `part-${entryId}-${process.pid}.mp4`);
+    try {
+      await run([
+        '-y', '-framerate', '1', '-start_number', '0',
+        '-i', path.join(tmp, 'f%d.jpg'),
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '10',
+        '-movflags', '+faststart', '-an', tmpOut
+      ], signal, 90000);
+      await fsp.rename(tmpOut, out);
+    } catch (e) {
+      await fsp.rm(tmpOut, { force: true }).catch(() => {});
+      throw e;
+    }
     return out;
   } finally {
     await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -168,7 +293,7 @@ async function generatePreview(srcPath, volumeId, entryId, signal) {
 // (large files can take a while). Resolves { ok, code, errors } or { aborted }.
 function checkMedia(srcPath, signal) {
   return new Promise((resolve) => {
-    const proc = spawn(resolveFfmpeg(), ['-v', 'error', '-i', srcPath, '-f', 'null', '-'], { windowsHide: true });
+    const proc = spawn(resolveFfmpeg(), ['-nostdin', '-v', 'error', '-i', srcPath, '-f', 'null', '-'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     const onAbort = () => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
@@ -190,8 +315,21 @@ function checkMedia(srcPath, signal) {
 // the rail's "how many already created" coverage bar.
 function countThumbs(volumeId) {
   try {
-    return fs.readdirSync(dirFor(volumeId)).reduce((n, f) => n + (f.endsWith('.jpg') ? 1 : 0), 0);
+    return fs.readdirSync(dirFor(volumeId)).reduce((n, f) => n + (/^\d+\.jpg$/.test(f) ? 1 : 0), 0);
   } catch { return 0; }
+}
+
+// Total bytes of a volume's local cache (thumbnails + preview clips) — i.e. how
+// much disk space this drive's catalog costs on the user's machine.
+async function cacheSize(volumeId) {
+  const dir = dirFor(volumeId);
+  let files;
+  try { files = await fsp.readdir(dir); } catch { return 0; }
+  let total = 0;
+  for (const f of files) {
+    try { total += (await fsp.stat(path.join(dir, f))).size; } catch { /* skip */ }
+  }
+  return total;
 }
 
 async function hasThumb(volumeId, entryId) {
@@ -234,6 +372,28 @@ async function importThumbs(volumeId, thumbMap, idMap) {
   return n;
 }
 
+// After a re-scan/sync the entry ids change, so rename each cached file from
+// its old id to the new id (matched by path via idRemap). Cached files whose
+// entry is gone (deleted on disk) are dropped. New ids are always greater than
+// old ones (AUTOINCREMENT), so a single pass can't clobber a not-yet-seen file.
+async function remapCache(volumeId, idRemap) {
+  const dir = dirFor(volumeId);
+  let files;
+  try { files = await fsp.readdir(dir); } catch { return; }
+  const map = new Map(Object.entries(idRemap || {}).map(([o, n]) => [Number(o), n]));
+  for (const f of files) {
+    const m = /^(\d+)\.(jpg|mp4)$/.exec(f);
+    if (!m) continue;
+    const oldId = Number(m[1]), ext = m[2];
+    const src = path.join(dir, f);
+    const newId = map.get(oldId);
+    if (newId == null) { await fsp.rm(src, { force: true }).catch(() => {}); continue; }
+    const dst = path.join(dir, `${newId}.${ext}`);
+    if (dst === src) continue;
+    try { await fsp.rm(dst, { force: true }); await fsp.rename(src, dst); } catch { /* skip */ }
+  }
+}
+
 // Delete the whole cache subtree for a volume (used on re-scan / removal).
 async function clearVolume(volumeId) {
   await fsp.rm(dirFor(volumeId), { recursive: true, force: true }).catch(() => {});
@@ -247,8 +407,8 @@ async function removeEntry(volumeId, entryId) {
 
 module.exports = {
   init, isVideo, isImage, isMedia, ffmpegAvailable,
-  generateThumb, generatePreview,
-  hasThumb, hasPreview, countThumbs, checkMedia, exportThumbs, importThumbs, clearVolume, removeEntry,
+  generateThumb, generatePreview, pickBestTimestamp, scoreFrame,
+  hasThumb, hasPreview, countThumbs, cacheSize, checkMedia, exportThumbs, importThumbs, remapCache, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
   VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,
   get cacheDir() { return cacheDir; }

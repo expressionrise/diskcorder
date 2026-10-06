@@ -8,6 +8,8 @@ const db = require('./db');
 const scanner = require('./scanner');
 const thumbs = require('./thumbs');
 const transfer = require('./transfer');
+const backup = require('./backup');
+const { spawn } = require('child_process');
 
 let win = null;
 
@@ -19,6 +21,19 @@ function assertInt(v, label = 'id') {
 function assertStr(v, label = 'value', max = 1000) {
   if (typeof v !== 'string' || v.length > max) throw new Error(`Invalid ${label}.`);
   return v;
+}
+
+// Join a catalog-relative path onto a drive root, refusing anything that would
+// land outside the root (catalog imports are untrusted: "..", absolute paths).
+function isInside(parent, child) {
+  const rel = path.relative(parent, child);
+  return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+}
+function safeJoin(root, rel) {
+  if (!root || typeof rel !== 'string' || !rel) return null;
+  const base = path.resolve(root);
+  const full = path.resolve(base, rel);
+  return isInside(base, full) ? full : null;
 }
 
 // ---- single instance ------------------------------------------------------
@@ -84,7 +99,7 @@ function registerThumbProtocol() {
       const u = new URL(request.url); // thumbcache://media/<volumeId>/<entryId>.<ext>
       const rel = decodeURIComponent(u.pathname).replace(/^[\\/]+/, '');
       const file = path.normalize(path.join(root, rel));
-      if (!file.startsWith(root)) return new Response('forbidden', { status: 403 });
+      if (file !== root && !file.startsWith(root + path.sep)) return new Response('forbidden', { status: 403 });
       const data = await fsp.readFile(file).catch(() => null);
       if (!data) return new Response('not found', { status: 404 });
       const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
@@ -112,9 +127,20 @@ ipcMain.handle('volumes:rename', (_e, id, name) => {
   db.renameVolume(assertInt(id), assertStr(name, 'name', 200));
   return true;
 });
-ipcMain.handle('volumes:reachable', (_e, id) => {
+ipcMain.handle('volumes:setIcon', (_e, id, icon) => {
+  db.setVolumeIcon(assertInt(id), icon == null ? null : assertStr(icon, 'icon', 16));
+  return true;
+});
+ipcMain.handle('volumes:reachable', async (_e, id) => {
   const vol = db.getVolume(assertInt(id));
-  return !!(vol && vol.root_path && fs.existsSync(vol.root_path));
+  if (!vol || !vol.root_path) return false;
+  try {
+    // Check if path exists and is actually accessible (not just that the path object exists)
+    await fsp.access(vol.root_path, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 });
 
 // Real filesystem capacity for the drive holding this volume's root, so the
@@ -151,6 +177,24 @@ ipcMain.handle('volumes:export', async (_e, id) => {
   return { ok: true, path: res.filePath, count: data.entries.length, thumbs: Object.keys(data.thumbs).length };
 });
 
+ipcMain.handle('volumes:export-to-drive', async (_e, id) => {
+  assertInt(id);
+  const vol = db.getVolume(id);
+  if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
+    return { ok: false, error: 'Drive not found or not connected.' };
+  }
+  const data = db.exportVolume(id);
+  if (!data) return { ok: false, error: 'Catalog not found.' };
+  data.thumbs = await thumbs.exportThumbs(id);
+  const catalogPath = path.join(vol.root_path, '.diskcorder-catalog.json');
+  try {
+    await fsp.writeFile(catalogPath, JSON.stringify(data), 'utf8');
+    return { ok: true, path: catalogPath, count: data.entries.length, thumbs: Object.keys(data.thumbs).length };
+  } catch (e) {
+    return { ok: false, error: 'Could not write catalog to drive: ' + e.message };
+  }
+});
+
 ipcMain.handle('volumes:import', async () => {
   const res = await dialog.showOpenDialog(win, {
     title: 'Import drive catalog',
@@ -166,6 +210,22 @@ ipcMain.handle('volumes:import', async () => {
     const thumbsRestored = await thumbs.importThumbs(volumeId, data.thumbs, idMap);
     return { ok: true, volumeId, thumbs: thumbsRestored };
   } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('drive:mark', async (_e, id) => {
+  assertInt(id);
+  const vol = db.getVolume(id);
+  if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
+    return { ok: false, error: 'Drive not found or not connected.' };
+  }
+  const markFile = path.join(vol.root_path, '.diskcorder-id');
+  const marker = { volumeId: vol.id, name: vol.name, markedAt: new Date().toISOString() };
+  try {
+    await fsp.writeFile(markFile, JSON.stringify(marker, null, 2), 'utf8');
+    return { ok: true, message: 'Drive marked successfully.' };
+  } catch (e) {
+    return { ok: false, error: 'Could not write identifier file: ' + e.message };
+  }
 });
 
 ipcMain.handle('drive:pick', async () => {
@@ -206,19 +266,26 @@ ipcMain.handle('drive:scan', async (_e, { root, name, existingVolumeId }) => {
   if (!fs.existsSync(root)) {
     return { ok: false, error: `That path isn't reachable right now: ${root}` };
   }
+  if (scanControl) return { ok: false, error: 'A scan is already running.' };
   scanControl = makeScanControl();
   try {
     const { entries, skipped } = await scanner.scan(root, (count, current) => {
       send('scan:progress', { count, current });
     }, scanControl);
+    // An unreadable root (drive yanked mid-scan) yields an empty result; don't
+    // let it wipe an existing catalog and its notes/tags.
+    if (existingVolumeId && !entries.length && skipped) {
+      return { ok: false, error: 'The drive could not be read, so the catalog was left unchanged.' };
+    }
     const meta = {
       name, root_path: root,
       scanned_at: new Date().toISOString(),
       file_count: 0, total_bytes: 0
     };
-    // A re-scan invalidates the old volume id's thumb cache.
-    if (existingVolumeId) await thumbs.clearVolume(existingVolumeId);
-    const volumeId = db.replaceVolume(existingVolumeId || null, meta, entries);
+    const { volumeId, idRemap } = db.replaceVolume(existingVolumeId || null, meta, entries);
+    // Keep cached thumbnails across a re-scan/sync: remap them from the old
+    // entry ids to the new ones (matched by path) instead of discarding them.
+    if (existingVolumeId) await thumbs.remapCache(volumeId, idRemap);
     return { ok: true, volumeId, skipped };
   } catch (err) {
     if (err && err.code === 'SCAN_ABORTED') return { ok: false, canceled: true };
@@ -245,9 +312,19 @@ ipcMain.handle('entries:setAlias', (_e, id, alias) => {
   db.setAlias(assertInt(id), alias == null ? null : assertStr(alias, 'alias', 500));
   return true;
 });
+ipcMain.handle('entries:setFlag', (_e, id, flag) => {
+  db.setFlag(assertInt(id), flag == null ? null : assertStr(flag, 'flag', 16));
+  return true;
+});
 ipcMain.handle('entries:search', (_e, term, volumeId) =>
   db.search(assertStr(term, 'term', 200), volumeId == null ? null : assertInt(volumeId, 'volumeId')));
 ipcMain.handle('entries:list', (_e, volumeId) => db.listFiles(assertInt(volumeId)));
+ipcMain.handle('entries:listUnder', (_e, volumeId, parentId) =>
+  db.listFilesUnder(assertInt(volumeId), parentId == null ? null : assertInt(parentId, 'parentId')));
+ipcMain.handle('entries:flagged', (_e, volumeId) => db.listFlagged(assertInt(volumeId)));
+ipcMain.handle('entries:resolvePath', (_e, volumeId, relPath) =>
+  db.resolveFolderPath(assertInt(volumeId), assertStr(relPath, 'relPath', 4096)));
+ipcMain.handle('entries:ancestry', (_e, id) => db.getAncestry(assertInt(id)));
 ipcMain.handle('entries:large', (_e, volumeId, opts) => {
   assertInt(volumeId);
   const o = opts || {};
@@ -290,7 +367,8 @@ ipcMain.handle('file:test', async (_e, id) => {
   if (!entry || entry.is_dir) return { ok: false, status: 'error', detail: 'Not a file.' };
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, status: 'offline' };
-  const src = path.join(vol.root_path, entry.rel_path);
+  const src = safeJoin(vol.root_path, entry.rel_path);
+  if (!src) return { ok: false, status: 'error', detail: 'Invalid path in catalog.' };
 
   let st;
   try { st = await fsp.stat(src); }
@@ -345,9 +423,13 @@ ipcMain.handle('entries:realRename', (_e, id, newName) => {
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
 
-  const oldFull = path.join(vol.root_path, entry.rel_path);
+  const oldFull = safeJoin(vol.root_path, entry.rel_path);
+  if (!oldFull) return { ok: false, error: 'Invalid path in catalog.' };
   if (!fs.existsSync(oldFull)) {
     return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
+  }
+  if (!newName.trim() || newName === '.' || newName === '..' || /[. ]$/.test(newName)) {
+    return { ok: false, error: 'That is not a valid file name.' };
   }
   if (/[\\/:*?"<>|]/.test(newName)) {
     return { ok: false, error: 'That name contains characters the filesystem won\'t allow.' };
@@ -384,9 +466,16 @@ ipcMain.handle('entries:realDelete', async (_e, id) => {
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
 
-  const full = path.join(vol.root_path, entry.rel_path);
-  if (!fs.existsSync(full)) {
-    return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
+  const full = safeJoin(vol.root_path, entry.rel_path);
+  if (!full) return { ok: false, error: 'Invalid path in catalog.' };
+  let st;
+  try { st = await fsp.lstat(full); }
+  catch { return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' }; }
+  // The drive letter may now belong to a different disk, or the file may have
+  // changed since the last scan - refuse to delete something that isn't what
+  // the catalog describes.
+  if (!!entry.is_dir !== st.isDirectory() || (!entry.is_dir && entry.size && st.size !== entry.size)) {
+    return { ok: false, error: 'What is on disk no longer matches the catalog (is this the right drive?). Update the drive and try again.' };
   }
   try {
     await fsp.rm(full, { recursive: !!entry.is_dir, force: true });
@@ -400,24 +489,55 @@ ipcMain.handle('entries:realDelete', async (_e, id) => {
 
 // ---- IPC: reveal in Explorer ---------------------------------------------
 
+// Resolve an entry's real on-disk path, or null if the drive/file isn't there.
+function realPathFor(id) {
+  const entry = db.getEntry(id);
+  if (!entry) return null;
+  const vol = db.getVolume(entry.volume_id);
+  if (!vol || !vol.root_path) return null;
+  const full = safeJoin(vol.root_path, entry.rel_path);
+  return full && fs.existsSync(full) ? full : null;
+}
+
 ipcMain.handle('entries:reveal', (_e, id) => {
   assertInt(id);
-  const entry = db.getEntry(id);
-  if (!entry) return { ok: false, error: 'Entry not found.' };
-  const vol = db.getVolume(entry.volume_id);
-  if (!vol || !vol.root_path) return { ok: false, error: 'No root path for this drive.' };
-  const full = path.join(vol.root_path, entry.rel_path);
-  if (!fs.existsSync(full)) {
-    return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
-  }
+  const full = realPathFor(id);
+  if (!full) return { ok: false, error: 'Drive not connected, or the file has moved. Connect the drive and try again.' };
   shell.showItemInFolder(full); // opens Explorer with the item selected
+  return { ok: true };
+});
+
+// Open the file in its default application.
+ipcMain.handle('entries:open', async (_e, id) => {
+  assertInt(id);
+  const full = realPathFor(id);
+  if (!full) return { ok: false, error: 'Drive not connected, or the file has moved.' };
+  const err = await shell.openPath(full); // '' on success
+  return err ? { ok: false, error: err } : { ok: true };
+});
+
+// Show the OS "Open with…" chooser (Windows); fall back to default open elsewhere.
+ipcMain.handle('entries:openWith', (_e, id) => {
+  assertInt(id);
+  const full = realPathFor(id);
+  if (!full) return { ok: false, error: 'Drive not connected, or the file has moved.' };
+  if (process.platform === 'win32') {
+    spawn('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', full], { windowsHide: false, detached: true }).unref();
+    return { ok: true };
+  }
+  shell.openPath(full);
   return { ok: true };
 });
 
 // ---- IPC: duplicates -----------------------------------------------------
 
-ipcMain.handle('entries:duplicates', (_e, volumeId) =>
-  db.findDuplicates(volumeId == null ? null : assertInt(volumeId, 'volumeId')));
+ipcMain.handle('entries:duplicates', (_e, opts) => {
+  opts = opts || {};
+  const volumeIds = Array.isArray(opts.volumeIds)
+    ? opts.volumeIds.map(v => assertInt(v, 'volumeId'))
+    : [];
+  return db.findDuplicates({ volumeIds, crossOnly: !!opts.crossOnly });
+});
 
 // ---- IPC: thumbnails (video + image) ------------------------------------
 
@@ -432,6 +552,7 @@ function makePauseGate() {
     wait()   { return paused ? new Promise(r => waiters.push(r)) : Promise.resolve(); }
   };
 }
+const ensureJobs = new Map(); // entryId -> in-flight thumbs:ensure promise
 const kindOf = (ext) => thumbs.isVideo(ext) ? 'video' : (thumbs.isImage(ext) ? 'image' : null);
 
 // Generate (if missing) the thumb — plus a hover preview for videos — for one
@@ -444,21 +565,30 @@ ipcMain.handle('thumbs:ensure', async (_e, id) => {
   if (!kind) return { ok: false };
   const vol = db.getVolume(entry.volume_id);
   if (!vol || !vol.root_path) return { ok: false, error: 'offline' };
-  const src = path.join(vol.root_path, entry.rel_path);
-  if (!fs.existsSync(src)) return { ok: false, error: 'offline' };
+  const src = safeJoin(vol.root_path, entry.rel_path);
+  if (!src || !fs.existsSync(src)) return { ok: false, error: 'offline' };
 
+  // One job per entry at a time: hovering the same row repeatedly (or the row
+  // plus the detail pane) must not spawn parallel ffmpegs writing the same file.
+  if (ensureJobs.has(id)) return ensureJobs.get(id);
   const ac = new AbortController();
-  try {
-    if (!(await thumbs.hasThumb(entry.volume_id, id))) {
-      await thumbs.generateThumb(src, entry.volume_id, id, ac.signal, kind);
+  const job = (async () => {
+    try {
+      if (!(await thumbs.hasThumb(entry.volume_id, id))) {
+        await thumbs.generateThumb(src, entry.volume_id, id, ac.signal, kind);
+      }
+      if (kind === 'video' && !(await thumbs.hasPreview(entry.volume_id, id))) {
+        await thumbs.generatePreview(src, entry.volume_id, id, ac.signal);
+      }
+      return { ok: true, volumeId: entry.volume_id, kind };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    } finally {
+      ensureJobs.delete(id);
     }
-    if (kind === 'video' && !(await thumbs.hasPreview(entry.volume_id, id))) {
-      await thumbs.generatePreview(src, entry.volume_id, id, ac.signal);
-    }
-    return { ok: true, volumeId: entry.volume_id, kind };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
+  })();
+  ensureJobs.set(id, job);
+  return job;
 });
 
 ipcMain.handle('thumbs:ready', () => thumbs.ffmpegAvailable());
@@ -472,15 +602,20 @@ ipcMain.handle('thumbs:coverage', (_e, volumeId) => {
   return { made, total };
 });
 
+// Local disk used by a drive's cached thumbnails + previews (its catalog cost).
+ipcMain.handle('thumbs:cachesize', (_e, volumeId) => thumbs.cacheSize(assertInt(volumeId)));
+
 // Batch-generate for every reachable media file in a volume (concurrency
 // limited). `previews` also builds the 10s hover clips for videos (slower).
 ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   assertInt(volumeId);
   const previews = !!(opts && opts.previews);
+  const refresh = !!(opts && opts.refresh);   // re-pick the still of every video (smart frame choice)
   const vol = db.getVolume(volumeId);
   if (!vol || !vol.root_path || !fs.existsSync(vol.root_path)) {
     return { ok: false, error: 'Drive is not connected.' };
   }
+  if (thumbAbort) return { ok: false, error: 'Preview generation is already running.' };
   const media = db.getMediaEntries(volumeId, thumbs.MEDIA_EXTS);
   if (!media.length) return { ok: true, total: 0 };
 
@@ -491,7 +626,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   for (const m of media) {
     const kind = kindOf(m.ext);
     if (!kind) continue;
-    const needThumb = !(await thumbs.hasThumb(volumeId, m.id));
+    const needThumb = !(await thumbs.hasThumb(volumeId, m.id)) || (refresh && kind === 'video');
     const needPrev  = previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id));
     if (needThumb || needPrev) pending.push(m);
   }
@@ -500,6 +635,7 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
     return { ok: true, total: 0, done: 0 };
   }
 
+  if (thumbAbort) return { ok: false, error: 'Preview generation is already running.' };
   thumbAbort = new AbortController();
   thumbGate = makePauseGate();
   const signal = thumbAbort.signal;
@@ -514,10 +650,10 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
       const m = queue.shift();
       if (!m) break;
       const kind = kindOf(m.ext);
-      const src = path.join(vol.root_path, m.rel_path);
+      const src = safeJoin(vol.root_path, m.rel_path);
       try {
-        if (kind && fs.existsSync(src)) {
-          if (!(await thumbs.hasThumb(volumeId, m.id))) await thumbs.generateThumb(src, volumeId, m.id, signal, kind);
+        if (kind && src && fs.existsSync(src)) {
+          if (!(await thumbs.hasThumb(volumeId, m.id)) || (refresh && kind === 'video')) await thumbs.generateThumb(src, volumeId, m.id, signal, kind);
           if (previews && kind === 'video' && !(await thumbs.hasPreview(volumeId, m.id))) {
             await thumbs.generatePreview(src, volumeId, m.id, signal);
           }
@@ -529,10 +665,13 @@ ipcMain.handle('thumbs:generate', async (_e, volumeId, opts) => {
   };
 
   const queue = pending.slice();
-  await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
-  send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
-  thumbAbort = null;
-  thumbGate = null;
+  try {
+    await Promise.all([worker(queue), worker(queue)]); // 2 concurrent ffmpeg
+  } finally {
+    send('thumbs:progress', { done, total, current: '', volumeId, finished: true });
+    thumbAbort = null;
+    thumbGate = null;
+  }
   return { ok: true, total, done, canceled: signal.aborted };
 });
 
@@ -551,6 +690,20 @@ ipcMain.handle('entries:setTags', (_e, id, tags) => {
     .filter(t => t && t.length <= 60))].slice(0, 40);
   db.setTags(id, clean);
   return { ok: true, tags: clean };
+});
+
+ipcMain.handle('entries:addTagBulk', (_e, ids, tag) => {
+  if (!Array.isArray(ids)) throw new Error('Invalid selection.');
+  const cleanIds = ids.map(i => assertInt(i, 'id'));
+  const t = assertStr(tag, 'tag', 60).trim();
+  if (!t) throw new Error('Empty tag.');
+  return db.addTagToEntries(cleanIds, t);
+});
+
+ipcMain.handle('entries:setFlagBulk', (_e, ids, flag) => {
+  if (!Array.isArray(ids)) throw new Error('Invalid selection.');
+  const cleanIds = ids.map(i => assertInt(i, 'id'));
+  return db.setFlagForEntries(cleanIds, flag == null ? null : assertStr(flag, 'flag', 16));
 });
 
 // ---- IPC: space map (treemap) -------------------------------------------
@@ -579,10 +732,17 @@ ipcMain.handle('transfer:start', async (_e, { entryId, destVolumeId, move, confl
   if (!entry) return { ok: false, error: 'Entry not found.' };
   const srcVol = db.getVolume(entry.volume_id);
   const destVol = db.getVolume(destVolumeId);
-  if (!srcVol || !destVol) return { ok: false, error: 'Drive not found.' };
+  if (!srcVol || !destVol || !srcVol.root_path || !destVol.root_path) return { ok: false, error: 'Drive not found.' };
 
-  const srcPath = path.join(srcVol.root_path, entry.rel_path);
+  const srcPath = safeJoin(srcVol.root_path, entry.rel_path);
+  if (!srcPath) return { ok: false, error: 'Invalid path in catalog.' };
   const destDir = destVol.root_path;
+  // Copying/moving a folder into itself recurses forever; "replace" onto the
+  // same path would delete the source before copying it.
+  const destTarget = path.resolve(destDir, path.basename(srcPath));
+  if (destTarget.toLowerCase() === srcPath.toLowerCase() || isInside(srcPath, path.resolve(destDir)) || path.resolve(destDir).toLowerCase() === srcPath.toLowerCase()) {
+    return { ok: false, error: 'The destination is the same as, or inside, the source.' };
+  }
 
   const opId = nextOpId++;
   const ac = new AbortController();
@@ -613,4 +773,159 @@ ipcMain.handle('transfer:cancel', (_e, opId) => {
   const ac = transferOps.get(opId);
   if (ac) ac.abort();
   return true;
+});
+
+// ---- IPC: additive backup between two connected drives -------------------
+
+let backupAbort = null;
+
+ipcMain.handle('backup:cancel', () => { if (backupAbort) backupAbort.abort(); return true; });
+
+ipcMain.handle('backup:start', async (_e, { srcVolumeId, destVolumeId, items }) => {
+  assertInt(srcVolumeId);
+  assertInt(destVolumeId);
+  if (srcVolumeId === destVolumeId) return { ok: false, error: 'Pick a different drive to back up to.' };
+  const src = db.getVolume(srcVolumeId);
+  const dest = db.getVolume(destVolumeId);
+  if (!src || !src.root_path || !fs.existsSync(src.root_path)) return { ok: false, error: 'Source drive is not connected.' };
+  if (!dest || !dest.root_path || !fs.existsSync(dest.root_path)) return { ok: false, error: 'Destination drive is not connected.' };
+
+  const rels = (Array.isArray(items) ? items : [])
+    .map(s => assertStr(s, 'item', 4096))
+    .filter(s => !path.isAbsolute(s) && !s.split(/[\\/]/).includes('..'));   // stay inside the drive
+
+  // Back up into a folder named after the source drive, so multiple drives
+  // can share one destination without colliding.
+  const safeName = (src.name || 'Backup').replace(/[\\/:*?"<>|]/g, '_');
+  const destBase = path.join(dest.root_path, safeName);
+  if (destBase.toLowerCase() === path.resolve(src.root_path).toLowerCase() || isInside(path.resolve(src.root_path), path.resolve(destBase))) {
+    return { ok: false, error: 'The backup destination is inside the source drive.' };
+  }
+  if (backupAbort) return { ok: false, error: 'A backup is already running.' };
+
+  backupAbort = new AbortController();
+  let last = 0;
+  const emit = (s, finished = false) => send('backup:progress', {
+    copied: s.copied, skipped: s.skipped, errors: s.errors,
+    copiedBytes: s.copiedBytes, skippedBytes: s.skippedBytes,
+    current: s.current, finished
+  });
+  try {
+    const stats = await backup.runBackup({
+      srcBase: src.root_path, destBase, items: rels,
+      signal: backupAbort.signal,
+      onProgress: (s) => { const now = Date.now(); if (now - last > 120) { last = now; emit(s); } }
+    });
+    emit(stats, true);
+    return { ok: true, ...stats, canceled: backupAbort.signal.aborted, destBase };
+  } catch (err) {
+    if (backupAbort && backupAbort.signal.aborted) return { ok: true, canceled: true };
+    return { ok: false, error: err.message };
+  } finally {
+    backupAbort = null;
+  }
+});
+
+// ---- IPC: backup tab — saved actions, any-folder runs, and run logs -------
+
+const jobsFile = () => path.join(app.getPath('userData'), 'backup-jobs.json');
+const logsDir  = () => path.join(app.getPath('userData'), 'backup-logs');
+const logIndexFile = () => path.join(logsDir(), 'index.json');
+
+async function readJson(file, fallback) {
+  try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return fallback; }
+}
+
+ipcMain.handle('backup:pickFolder', async (_e, title) => {
+  const res = await dialog.showOpenDialog(win, {
+    title: title || 'Choose a folder',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  return (res.canceled || !res.filePaths.length) ? null : res.filePaths[0];
+});
+
+ipcMain.handle('backup:listJobs', () => readJson(jobsFile(), []));
+
+ipcMain.handle('backup:saveJob', async (_e, job) => {
+  const jobs = await readJson(jobsFile(), []);
+  const j = {
+    id: job.id || `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: assertStr(job.name || 'Backup', 'name', 200),
+    source: assertStr(job.source, 'source', 4096),
+    dest: assertStr(job.dest, 'dest', 4096),
+    lastRun: job.lastRun || null
+  };
+  const i = jobs.findIndex(x => x.id === j.id);
+  if (i >= 0) jobs[i] = { ...jobs[i], ...j }; else jobs.push(j);
+  await fsp.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8');
+  return j;
+});
+
+ipcMain.handle('backup:deleteJob', async (_e, id) => {
+  const jobs = (await readJson(jobsFile(), [])).filter(x => x.id !== id);
+  await fsp.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8');
+  return true;
+});
+
+ipcMain.handle('backup:logIndex', () => readJson(logIndexFile(), []));
+ipcMain.handle('backup:logDetail', (_e, runId) => {
+  assertStr(runId, 'runId', 80);
+  if (!/^[\w-]+$/.test(runId)) return null;          // guard against path tricks
+  return readJson(path.join(logsDir(), `${runId}.json`), null);
+});
+
+// Run a backup of an arbitrary source folder into an arbitrary destination
+// folder (created under a subfolder named after the source). Writes a log.
+ipcMain.handle('backup:runPath', async (_e, { source, dest, name, jobId }) => {
+  assertStr(source, 'source', 4096);
+  assertStr(dest, 'dest', 4096);
+  if (!fs.existsSync(source)) return { ok: false, error: 'Source folder is not reachable.' };
+  if (!fs.existsSync(dest)) return { ok: false, error: 'Destination folder is not reachable.' };
+  const srcBase = path.resolve(source);
+  const destBase = path.join(path.resolve(dest), path.basename(srcBase) || 'Backup');
+  if (destBase.toLowerCase() === srcBase.toLowerCase() || isInside(srcBase, path.resolve(destBase))) {
+    return { ok: false, error: 'Destination is inside the source folder.' };
+  }
+  if (backupAbort) return { ok: false, error: 'A backup is already running.' };
+
+  backupAbort = new AbortController();
+  let last = 0;
+  const emit = (s, finished = false) => send('backup:progress', {
+    copied: s.copied, skipped: s.skipped, errors: s.errors,
+    copiedBytes: s.copiedBytes, current: s.current, finished, jobId
+  });
+  const when = new Date().toISOString();
+  try {
+    const stats = await backup.runBackup({
+      srcBase, destBase, items: [''], signal: backupAbort.signal,
+      onProgress: (s) => { const now = Date.now(); if (now - last > 120) { last = now; emit(s); } }
+    });
+    emit(stats, true);
+    const canceled = backupAbort.signal.aborted;
+
+    // write the run log
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    await fsp.mkdir(logsDir(), { recursive: true }).catch(() => {});
+    const summary = {
+      runId, name: name || path.basename(srcBase), jobId: jobId || null,
+      source: srcBase, dest: destBase, when, canceled,
+      copied: stats.copied, skipped: stats.skipped, errors: stats.errors, copiedBytes: stats.copiedBytes
+    };
+    await fsp.writeFile(path.join(logsDir(), `${runId}.json`), JSON.stringify({ ...summary, files: stats.files }, null, 2), 'utf8');
+    const index = await readJson(logIndexFile(), []);
+    index.unshift(summary);
+    await fsp.writeFile(logIndexFile(), JSON.stringify(index.slice(0, 200), null, 2), 'utf8');
+
+    if (jobId) {
+      const jobs = await readJson(jobsFile(), []);
+      const j = jobs.find(x => x.id === jobId);
+      if (j) { j.lastRun = summary; await fsp.writeFile(jobsFile(), JSON.stringify(jobs, null, 2), 'utf8'); }
+    }
+    return { ok: true, ...summary };
+  } catch (err) {
+    if (backupAbort && backupAbort.signal.aborted) return { ok: true, canceled: true };
+    return { ok: false, error: err.message };
+  } finally {
+    backupAbort = null;
+  }
 });

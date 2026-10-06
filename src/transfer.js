@@ -25,6 +25,20 @@ async function measure(srcPath) {
   return total;
 }
 
+// True if the tree contains symlinks (they are never copied, so a move must
+// not delete the source and lose them).
+async function hasSymlinks(srcPath) {
+  const st = await fsp.lstat(srcPath);
+  if (st.isSymbolicLink()) return true;
+  if (!st.isDirectory()) return false;
+  const dirents = await fsp.readdir(srcPath, { withFileTypes: true });
+  for (const d of dirents) {
+    if (d.isSymbolicLink()) return true;
+    if (d.isDirectory() && await hasSymlinks(path.join(srcPath, d.name)).catch(() => false)) return true;
+  }
+  return false;
+}
+
 // Pick a non-colliding destination path: "name (2).ext", "name (3).ext"…
 async function resolveConflict(dstPath, mode) {
   let exists = await fsp.access(dstPath).then(() => true).catch(() => false);
@@ -104,12 +118,34 @@ async function transfer({ srcPath, destDir, move, conflict, signal, onProgress }
     }
   };
 
-  if (conflict === 'replace') await fsp.rm(dstPath, { recursive: true, force: true }).catch(() => {});
-  await copyRecursive(srcPath, dstPath, signal, onBytes);
+  // Replace: write next to the existing item first and swap on success, so a
+  // cancel or error never destroys the previous version.
+  const replacing = conflict === 'replace' && await fsp.access(dstPath).then(() => true).catch(() => false);
+  const target = replacing ? `${dstPath}.diskcorder-part` : dstPath;
+  if (replacing) await fsp.rm(target, { recursive: true, force: true }).catch(() => {});
+  try {
+    await copyRecursive(srcPath, target, signal, onBytes);
+  } catch (err) {
+    // Cancel/error: remove whatever was already written for this item (it did
+    // not exist before this transfer), never touch the source or old version.
+    await fsp.rm(target, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+  if (replacing) {
+    await fsp.rm(dstPath, { recursive: true, force: true });
+    await fsp.rename(target, dstPath);
+  }
   if (onProgress) onProgress({ copied: total, total });
 
   if (move) {
-    // Only delete the source once the copy fully succeeded.
+    // Only delete the source once the copy fully succeeded AND the destination
+    // holds the same number of bytes.
+    if ((await measure(dstPath)) !== total) {
+      throw new Error('The copy does not match the source size; the original was kept.');
+    }
+    if (await hasSymlinks(srcPath)) {
+      throw new Error('The folder contains symbolic links, which are not copied; the copy was made but the original was kept.');
+    }
     await fsp.rm(srcPath, { recursive: true, force: true });
   }
   return { status: 'done', dstPath };

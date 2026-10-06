@@ -34,12 +34,12 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   is disconnected. Drives show a **connected / offline** badge in real time.
 - **Cross-drive search** — search names, notes, and aliases across every mapped
   drive at once; results show which drive and where. Toggle "this drive" to scope it.
-- **Video + image thumbnails** — every video and image gets a still thumbnail
-  (taken from the first frame). Thumbnails generate **automatically when a drive is
-  connected** and after a scan; generation is **resumable** (skips what's already
-  made) and shown by a coverage bar + live progress bar on each drive card. Hover a
-  video to play a short preview clip sampled across the file. The background batch
-  can be **paused, resumed, or canceled** from the ops drawer.
+- **Video + image thumbnails** — generate still thumbnails for videos and images
+  with the **Previews** button (a confirmation step first; generation is **manual**
+  so large libraries can't overload the app). It is **resumable** (skips what's
+  already made) and shown by a coverage bar + live progress bar on each drive card.
+  Hover a video to play a short preview clip sampled across the file. The batch can
+  be **paused, resumed, or canceled** from the ops drawer.
 - **Three browsing views** — switch the file browser between **Folders** (tree),
   **List** (flat filenames + clickable locations), and **Gallery** (large thumbnail
   tiles). Sort by name, size, date, label, or tag. A **folder tree in the left rail**
@@ -49,6 +49,16 @@ notes and aliases, in a single local database. Nothing leaves your machine.
 - **Test file for damage** — from a file's detail panel, read the real file off the
   drive to check it isn't corrupt: ffmpeg decodes videos/images, other files are read
   end to end, with a size-vs-catalog check. Cancelable for large files.
+- **Starred** — flag files and folders, then review them all in a **Starred** tab.
+- **Test Drive** — scan a connected drive for health problems and verify its real
+  capacity (catches fake / counterfeit USB drives).
+- **Backup** — additive backup between drives: copies new and changed files from
+  chosen folders, skips unchanged ones, and never deletes anything at the destination.
+- **Drive identification** — **Mark** a drive (writes a small `.diskcorder-id` file)
+  so it's recognized when reconnected; catalogs can be exported to the computer or
+  saved on the drive itself (`.diskcorder-catalog.json`).
+- **Tutorial & themes** — an interactive first-launch tutorial, multi-select bulk
+  operations, and several color themes (including a light one).
 - **Space map** — a **Space map** tab with a WizTree/WinDirStat-style **colored
   treemap**: every file and folder sized by how much space it holds and colored by
   type. Click a folder tile to drill in, breadcrumb to come back. Folders in the
@@ -180,8 +190,8 @@ The app icon is generated from `scripts/make-icon.js` (`node scripts/make-icon.j
 ### Using it
 
 1. **Map a drive** — pick a drive or folder, give it a name, and let it scan. You can
-   pause, resume, or cancel a long scan from the overlay. Video/image thumbnails
-   generate in the background once it finishes.
+   pause, resume, or cancel a long scan from the overlay. Use **Previews** afterwards
+   to generate video/image thumbnails.
 2. **Browse** — click a drive in the left rail; double-click folders to open them,
    use the breadcrumb to go back. Folders show their total size.
 3. **Annotate** — click any file or folder to add notes, an alias, and tags (all save
@@ -201,8 +211,9 @@ The app icon is generated from `scripts/make-icon.js` (`node scripts/make-icon.j
 
 - **FTS5 / trigram search** — swap `LIKE` for SQLite full-text search for very large
   catalogs (today's escaped `LIKE` keeps intuitive substring matching).
-- **Volume fingerprint** — detect a re-inserted drive by its volume serial instead
-  of the saved root path.
+- **Volume serial fingerprint** — detect a re-inserted drive by its hardware volume
+  serial (today the `.diskcorder-id` marker file is used).
+- **Fix thumbnail crashes** — find the root cause so auto-generation can be re-enabled.
 - **Video metadata** — surface duration/resolution/codec in the detail pane.
 - **Filter by tag** — click a tag to list everything that carries it.
 - **Pick a destination subfolder** for copy/move (today it lands at the drive root).

@@ -1359,6 +1359,9 @@ function renderDetail(entry) {
     meta.append(dt, dd);
   }
 
+  // Video/image facts (needs ffmpeg + the drive connected); cached per entry.
+  if (!entry.is_dir && (isVideoExt(entry.ext) || isImageExt(entry.ext))) showMediaInfo(entry, meta);
+
   // Reset the integrity-test control for the newly shown entry.
   const testBtn = $('test-file');
   testBtn.classList.toggle('hidden', !!entry.is_dir);
@@ -1370,6 +1373,37 @@ function renderDetail(entry) {
   $('alias-input').value = entry.alias || '';
   $('note-input').value = entry.note || '';
   renderTags(entry);
+}
+
+const mediaInfoCache = new Map();
+
+function fmtDuration(sec) {
+  const t = Math.round(sec), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+async function showMediaInfo(entry, meta) {
+  let info = mediaInfoCache.get(entry.id);
+  if (!info) {
+    const res = await api.mediaInfo(entry.id).catch(() => null);
+    if (!res || !res.ok) return;
+    info = res.info;
+    mediaInfoCache.set(entry.id, info);
+  }
+  if (!state.selectedEntry || state.selectedEntry.id !== entry.id) return;   // selection moved on
+  const img = isImageExt(entry.ext);          // stills have no meaningful duration / fps / bitrate
+  const rows = [
+    !img && info.duration != null && ['Duration', fmtDuration(info.duration)],
+    info.width && ['Resolution', `${info.width}×${info.height}${!img && info.fps ? ` · ${Math.round(info.fps * 100) / 100} fps` : ''}`],
+    info.vcodec && ['Codec', !img && info.acodec ? `${info.vcodec} + ${info.acodec}` : info.vcodec],
+    !img && info.bitrate && ['Bitrate', info.bitrate >= 1000 ? `${(info.bitrate / 1000).toFixed(1)} Mb/s` : `${info.bitrate} kb/s`]
+  ].filter(Boolean);
+  for (const [k, v] of rows) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    meta.append(dt, dd);
+  }
 }
 
 // ---- tags ----------------------------------------------------------------

@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('api', {
   ancestry: (id) => ipcRenderer.invoke('entries:ancestry', id),
   realRename: (id, newName) => ipcRenderer.invoke('entries:realRename', id, newName),
   realDelete: (id) => ipcRenderer.invoke('entries:realDelete', id),
+  mediaInfo: (id) => ipcRenderer.invoke('entries:mediaInfo', id),
   testFile: (id) => ipcRenderer.invoke('file:test', id),
   cancelFileTest: () => ipcRenderer.invoke('file:test:cancel'),
   findDuplicates: (opts) => ipcRenderer.invoke('entries:duplicates', opts),

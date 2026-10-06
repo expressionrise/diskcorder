@@ -2836,6 +2836,15 @@ function updateDupeActions() {
 async function deleteSelectedDuplicates() {
   const ids = [...dupeSel];
   if (!ids.length) return;
+  // Never wipe out every copy of a file: each set must keep at least one.
+  const wipedSets = [...document.querySelectorAll('.dup-group')].filter(card => {
+    const rows = [...card.querySelectorAll('.dup-item')];
+    return rows.length && rows.every(r => dupeSel.has(Number(r.dataset.id)));
+  }).length;
+  if (wipedSets) {
+    toast(`Keep at least one copy of each file — ${wipedSets} set${wipedSets === 1 ? ' has' : 's have'} every copy selected.`, true);
+    return;
+  }
   const bytes = ids.reduce((s, id) => s + ((dupeById.get(id) || {}).size || 0), 0);
   const ok = await promptModal({
     title: `Delete ${ids.length} selected cop${ids.length === 1 ? 'y' : 'ies'}?`,

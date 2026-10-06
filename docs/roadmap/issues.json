@@ -1,0 +1,151 @@
+{
+  "milestones": [
+    { "title": "v0.3.1", "description": "Post-release polish: signing, packaging, tests." },
+    { "title": "v0.4.0", "description": "Next feature release (roadmap items)." },
+    { "title": "Backlog", "description": "Accepted but not scheduled." }
+  ],
+  "labels": [
+    { "name": "release", "color": "0e8a16", "description": "Packaging, signing, CI and releases" },
+    { "name": "testing", "color": "fbca04", "description": "Automated or manual test coverage" },
+    { "name": "tech-debt", "color": "bfd4f2", "description": "Internal quality, no user-visible change" },
+    { "name": "ux", "color": "d4c5f9", "description": "User interface and experience" },
+    { "name": "thumbnails", "color": "c5def5", "description": "Thumbnails, previews, ffmpeg" },
+    { "name": "security", "color": "b60205", "description": "Security-relevant" },
+    { "name": "platform", "color": "5319e7", "description": "OS / platform support" },
+    { "name": "blocked", "color": "000000", "description": "Waiting on something external" }
+  ],
+  "issues": [
+    {
+      "title": "Sign Windows releases with SignPath Foundation",
+      "milestone": "v0.3.1",
+      "labels": ["release", "blocked"],
+      "body": "## Context\nWe applied to the SignPath Foundation (free code signing for OSS) on 2026-10-06 and are waiting for a decision. Releases are currently unsigned, so Windows SmartScreen shows an \"unknown publisher\" warning.\n\n## Work\n- [ ] Wait for the approval e-mail and answer any follow-up questions\n- [ ] Add the SignPath integration (organization/project ids as variables, API token in GitHub Secrets) in `.github/workflows/release.yml` at the `TODO(code signing)` step\n- [ ] Update `CODE_SIGNING.md`, README and the website (remove \"being set up\"; add the required SignPath attribution)\n- [ ] Cut a signed release (v0.3.1) and verify the signature on the installer and the portable exe\n\n## Acceptance criteria\n- Setup and Portable exes in the GitHub Release are signed by SignPath Foundation\n- SmartScreen no longer says \"unknown publisher\" for the signed binaries (reputation may still take time)\n\n## Notes\nThe bundled ffmpeg is GPLv3 (separate process); see `THIRD_PARTY_NOTICES.md`."
+    },
+    {
+      "title": "Stop shipping ffmpeg twice (shrink the installer)",
+      "milestone": "v0.3.1",
+      "labels": ["release", "enhancement"],
+      "body": "## Context\n`ffmpeg.exe` is packed both as an extra resource (`resources/ffmpeg.exe`) and inside `app.asar.unpacked/node_modules/ffmpeg-static/`. The installer is ~142 MB; `dist/win-unpacked` is 183 MB.\n\n## Proposal\nExclude `node_modules/ffmpeg-static/ffmpeg.exe` from the app files (or drop the extra resource) and make `resolveFfmpeg()` in `src/thumbs.js` find the single copy in the packaged app.\n\n## Acceptance criteria\n- Only one ffmpeg.exe in the packaged output\n- Thumbnails, previews, media info and Verify file work from the **packaged** app (not just `npm start`)\n- ffmpeg license/README still shipped (see THIRD_PARTY_NOTICES.md)"
+    },
+    {
+      "title": "Portable build: keep data next to the exe",
+      "milestone": "v0.3.1",
+      "labels": ["release", "enhancement"],
+      "body": "## Context\nThe portable exe still stores `catalog.db`, thumbnails and settings under `%APPDATA%`, so it isn't truly portable (e.g. run from a USB stick).\n\n## Proposal\nWhen running as the electron-builder portable target (`PORTABLE_EXECUTABLE_DIR` is set) use `<exe dir>/DiskcorderData` as `userData`. Keep the installed build unchanged.\n\n## Acceptance criteria\n- Portable exe creates and reads its data next to itself\n- Installed build keeps using `%APPDATA%`\n- README documents the behavior"
+    },
+    {
+      "title": "Automated test suite (transfer, backup, thumbnails, db) running in CI",
+      "milestone": "v0.3.1",
+      "labels": ["testing", "tech-debt"],
+      "body": "## Context\nThere is no automated test suite. During the 2026-10-06 review we verified transfer, backup, thumbnails and the UI with throw-away scripts; they should become permanent tests.\n\n## Scope\n- [ ] Use the Node test runner (`node --test`), no new dependencies\n- [ ] `transfer.js`: copy/move/replace/skip/keep-both, cancel cleanup, replace+cancel keeps the old version, move keeps the source on size mismatch\n- [ ] `backup.js`: first run, skip unchanged, update changed, cancel keeps good copy, no `.diskcorder-part` leftovers\n- [ ] `thumbs.js`: `pickBestTimestamp` avoids a black intro, `probeInfo` parsing, concurrency cap, abort leaves no part files (generate fixtures with ffmpeg-static)\n- [ ] `db.js`: replaceVolume keeps notes/aliases/tags, migrations, LIKE escaping\n- [ ] `safeJoin`/`isInside` path-validation cases (`..`, absolute paths, drive root)\n- [ ] Run in `.github/workflows/ci.yml`\n\n## Acceptance criteria\n`npm test` passes locally and in CI; tests use temp dirs only (never real drives)."
+    },
+    {
+      "title": "Smoke-test the packaged app in CI (electron-builder --dir)",
+      "milestone": "v0.3.1",
+      "labels": ["release", "testing"],
+      "body": "## Context\nRelease problems (native module rebuild, missing resources) only show up when the tag workflow runs.\n\n## Proposal\nAdd a CI job on `windows-latest` that runs `npx electron-builder --win --dir`, checks that `resources/ffmpeg.exe`, the ffmpeg license and `THIRD_PARTY_NOTICES.md` exist, and starts the exe for a few seconds.\n\n## Acceptance criteria\nA broken packaging config fails the PR check instead of the release."
+    },
+    {
+      "title": "Opt-in auto-generation of thumbnails when a drive connects",
+      "milestone": "v0.4.0",
+      "labels": ["thumbnails", "enhancement", "ux"],
+      "body": "## Context\nAuto-generation was disabled in commit 7843ebb because of crashes. Likely causes were fixed on 2026-10-06 (ffmpeg concurrency capped at 3, jobs de-duplicated, atomic outputs, timeouts), but it hasn't had real-world testing.\n\n## Proposal\n- Add a setting \"Generate thumbnails automatically when a drive connects\" (default **off**)\n- Reuse the existing resumable batch; show progress in the ops drawer; pause on low battery/while copying is optional\n\n## Acceptance criteria\n- Setting persists\n- With it on, connecting a large drive does not freeze or crash the app\n- Cancel/pause work"
+    },
+    {
+      "title": "Choose a destination subfolder for copy / move",
+      "milestone": "v0.4.0",
+      "labels": ["enhancement", "ux"],
+      "body": "## Context\nCopy/move always lands at the root of the target drive.\n\n## Proposal\nIn the copy/move dialog let the user pick (or type) a destination folder on the target drive, using the catalog's folder tree; default stays the root. Validate with `safeJoin`.\n\n## Acceptance criteria\n- Item ends up in the chosen folder; conflicts handled as today\n- Path can't escape the drive root\n- Remembers the last destination per drive (optional)"
+    },
+    {
+      "title": "Update the catalog live after copy / move",
+      "milestone": "v0.4.0",
+      "labels": ["enhancement"],
+      "body": "## Context\nAfter a copy/move the destination catalog isn't updated until the user re-scans.\n\n## Proposal\nInsert (copy) or re-parent (move) the affected entries in SQLite right after a successful transfer, keeping notes/tags for moved items, and refresh the visible listing.\n\n## Acceptance criteria\n- Copied/moved items appear immediately in the destination and disappear from the source on move\n- Folder `tree_size` roll-ups are updated\n- Covered by tests"
+    },
+    {
+      "title": "Content-hash duplicate detection",
+      "milestone": "v0.4.0",
+      "labels": ["enhancement"],
+      "body": "## Context\nDuplicates are matched by name + size, which can false-positive (and misses renamed copies).\n\n## Proposal\nOptionally confirm candidates by hashing content when the drive is connected (partial hash first: size + first/last MB, then full hash on request). Store hashes in the catalog so offline comparison works. Progress + cancel in the ops drawer.\n\n## Acceptance criteria\n- Duplicates tab can show \"verified identical\" vs \"same name+size\"\n- Hashing is cancelable and doesn't block the UI\n- The existing guard (never delete every copy) still applies"
+    },
+    {
+      "title": "\"Missing files since last scan\" (diff on re-scan)",
+      "milestone": "v0.4.0",
+      "labels": ["enhancement", "ux"],
+      "body": "## Context\nRe-scanning/updating a drive silently replaces the catalog; users can't see what disappeared or changed.\n\n## Proposal\nOn Update, compute added / removed / changed entries versus the previous catalog and show a summary (with a list) after the scan. Keep notes/tags of removed entries recoverable for the session.\n\n## Acceptance criteria\n- Summary after Update: N added, N removed, N changed\n- Clicking the summary lists the files"
+    },
+    {
+      "title": "Faster search for very large catalogs (FTS5 / trigram)",
+      "milestone": "Backlog",
+      "labels": ["enhancement", "tech-debt"],
+      "body": "## Context\nSearch uses escaped `LIKE` over names, notes, aliases and tags. Fine today; will slow down on catalogs with millions of rows.\n\n## Proposal\nBenchmark first. If needed move to SQLite FTS5 (trigram tokenizer) keeping substring semantics, with a migration and rebuild step.\n\n## Acceptance criteria\n- Benchmark on a synthetic 1M-entry catalog documented in the PR\n- Search behavior (substring, case-insensitive, scoped to drive) unchanged"
+    },
+    {
+      "title": "Recognize drives by volume serial number",
+      "milestone": "Backlog",
+      "labels": ["enhancement"],
+      "body": "## Context\nDrives are matched by saved root path / the `.diskcorder-id` marker file. If the drive letter changes or the marker is missing, the drive shows as offline.\n\n## Proposal\nRead the Windows volume serial (and label) and use it as a fallback fingerprint to re-detect a drive on a different letter.\n\n## Acceptance criteria\nA mapped drive plugged in under a new letter is detected as connected without re-mapping."
+    },
+    {
+      "title": "File lists silently stop at 20,000 entries",
+      "milestone": "v0.4.0",
+      "labels": ["tech-debt", "ux"],
+      "body": "## Context\n`listFiles`, `listFilesUnder` and `listFlagged` in `src/db.js` use a hard `LIMIT 20000`; List/Gallery views for big drives are truncated without any hint.\n\n## Proposal\nEither page results (load more on scroll) or show a visible \"showing first 20,000 of N\" notice with a way to narrow down.\n\n## Acceptance criteria\n- User can tell when a list is truncated or can reach all entries\n- Large drives remain responsive"
+    },
+    {
+      "title": "Replace blocking fs.existsSync calls in IPC handlers",
+      "milestone": "Backlog",
+      "labels": ["tech-debt"],
+      "body": "## Context\nSeveral handlers in `src/main.js` call `fs.existsSync` on drive paths. On a disconnected or slow network drive this blocks the main process and freezes the UI.\n\n## Proposal\nUse `fsp.access`/`fsp.stat` with a timeout helper. Keep reachability checks cheap (the periodic check already exists).\n\n## Acceptance criteria\nUnplugging a drive or a stalled network path never freezes the window."
+    },
+    {
+      "title": "Thumbnail progress bar can update a transfer row",
+      "milestone": "Backlog",
+      "labels": ["bug", "ux"],
+      "body": "## Context\n`onThumbProgress` in `src/renderer/renderer.js` updates the first `.op-row` in the ops drawer. If a copy/move/backup is running at the same time, the thumbnail progress can overwrite that row.\n\n## Fix\nTag op rows by operation id/kind and update the matching one.\n\n## Acceptance criteria\nRunning a transfer and a thumbnail batch together shows two independent, correct rows."
+    },
+    {
+      "title": "Export of thumbnails loads everything into memory",
+      "milestone": "Backlog",
+      "labels": ["tech-debt", "thumbnails"],
+      "body": "## Context\n`exportThumbs` in `src/thumbs.js` base64-encodes all thumbnails into one JSON object, which can use a lot of memory for big catalogs.\n\n## Proposal\nStream the export (NDJSON or a zip) and import incrementally. Keep import of the old format.\n\n## Acceptance criteria\nExporting a drive with 50k thumbnails stays within a reasonable memory ceiling; old exports still import."
+    },
+    {
+      "title": "Don't lower user_version when opening a newer database",
+      "milestone": "Backlog",
+      "labels": ["tech-debt"],
+      "body": "## Context\n`runMigrations` in `src/db.js` writes `user_version` back down if an older app version opens a database created by a newer one, which can cause migrations to re-run later.\n\n## Proposal\nIf the DB version is newer than the app supports, refuse to open it with a clear message (or open read-only) instead of downgrading.\n\n## Acceptance criteria\nOpening a newer DB never alters its `user_version`; the user sees an explanatory message."
+    },
+    {
+      "title": "Test symbolic-link behavior and the Gallery multi-select layout",
+      "milestone": "v0.3.1",
+      "labels": ["testing"],
+      "body": "## Context\nTwo things from the 2026-10-06 test pass could not be verified:\n- Moving a folder that contains symlinks should copy the rest, keep the original and show a message (no privilege to create symlinks on the test machine).\n- The multi-select checkbox position in the new Gallery grid cards was never checked visually.\n\n## Work\n- [ ] Test the symlink case on a machine/CI runner that can create symlinks (add to the automated tests where possible)\n- [ ] Open Gallery, enable Select, and verify the checkbox and star don't overlap or hide the thumbnail; fix CSS if needed"
+    },
+    {
+      "title": "Accessibility & readability pass 2: font sizes and remaining hard-coded colors",
+      "milestone": "v0.4.0",
+      "labels": ["ux"],
+      "body": "## Context\nThe contrast pass (2026-10-06) only changed theme tokens and was checked on empty states plus a few views. About 47 rules use 9-11px fonts, and some views may still use hard-coded colors.\n\n## Work\n- [ ] Review Space map, Duplicates, Large files, Backup, Test Drive, modals and the tutorial with real data in all three themes\n- [ ] Raise the smallest font sizes (min ~11-12px for body text)\n- [ ] Replace hard-coded colors with tokens; check treemap label contrast\n- [ ] Keyboard focus visible on all controls\n\n## Acceptance criteria\nText/background pairs meet 4.5:1 in dark, blue and light themes."
+    },
+    {
+      "title": "Website: realistic screenshots and expressionrise.com project card",
+      "milestone": "v0.3.1",
+      "labels": ["documentation"],
+      "body": "## Context\nThe screenshots on the website (`site/assets/`) were taken from synthetic test data (colored test patterns, a drive named \"Diskcorder Test Drive\").\n\n## Work\n- [ ] Retake screenshots with realistic sample content (non-copyrighted footage/photos), all three themes optional\n- [ ] Add the project card/links to https://expressionrise.com/ (snippet is in the PR notes)\n- [ ] Add repo topics: electron, sqlite, usb, video, disk-catalog\n- [ ] Link Setup and Portable downloads directly on the site"
+    },
+    {
+      "title": "Research: macOS and Linux support",
+      "milestone": "Backlog",
+      "labels": ["platform", "question"],
+      "body": "## Context\nThe app is Windows-only today (ffmpeg.exe resource, drive-letter assumptions, NSIS/portable targets).\n\n## Questions\n- What breaks on macOS/Linux (paths, `ffmpeg-static` binaries, volume detection, reachability checks, Open in Explorer)?\n- Build targets (dmg/AppImage) and signing/notarization effort?\n- Is there demand? (gather feedback in this issue)\n\n## Deliverable\nA short write-up with an estimate; no code required."
+    },
+    {
+      "title": "Localization (Polish UI)",
+      "milestone": "Backlog",
+      "labels": ["enhancement", "ux", "help wanted"],
+      "body": "## Context\nAll UI strings are English and inline in `renderer.js`/`index.html`.\n\n## Proposal\nExtract strings into a small dictionary (no framework), add a language switch in settings, ship Polish first.\n\n## Acceptance criteria\n- Language persists; falls back to English for missing keys\n- Contributors can add a language by adding one file"
+    }
+  ]
+}

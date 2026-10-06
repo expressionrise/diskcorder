@@ -1039,3 +1039,19 @@ select.field { height: 36px; padding: 0 10px; appearance: none; cursor: pointer;
   .backup-progress.active .backup-bar-fill { animation: none; width: 100%; }
   .btn:active, .mini:active, .seg-btn:active, .tab:active { transform: none; }
 }
+
+/* Visit heat: a dot left of a folder name — bigger/brighter the more it's opened */
+.visit-dot {
+  display: inline-block; flex: none; width: 10px; height: 10px; margin-right: 6px;
+  vertical-align: middle; position: relative;
+}
+.visit-dot::after {
+  content: ''; position: absolute; left: 50%; top: 50%; border-radius: 50%;
+  transform: translate(-50%, -50%); width: 0; height: 0; background: var(--accent);
+}
+.visit-dot.lv1::after { width: 4px;  height: 4px;  opacity: .55; }
+.visit-dot.lv2::after { width: 7px;  height: 7px;  opacity: .8; }
+.visit-dot.lv3::after { width: 10px; height: 10px; opacity: 1; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+
+.visit-dot.emoji { width: auto; height: auto; font-size: 11px; line-height: 1; min-width: 14px; }
+.visit-dot.emoji::after { display: none; }

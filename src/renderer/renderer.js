@@ -557,12 +557,89 @@ async function restoreSession() {
   if (s.tab && s.tab !== 'files' && $('tab-' + s.tab)) switchTab(s.tab);
 }
 
+// ---- visit heat (where you go often) -------------------------------------
+// A per-viewer convenience kept in localStorage: how many times (and when) each
+// folder was opened. Shown as a dot left of the folder name — bigger and
+// brighter the more often / more recently you go there.
+
+const VISITS_KEY = 'diskcorder-visits';
+const visits = (() => {
+  try { return JSON.parse(localStorage.getItem(VISITS_KEY)) || {}; } catch { return {}; }
+})();
+let lastVisitKey = null;
+
+function saveVisits() {
+  try { localStorage.setItem(VISITS_KEY, JSON.stringify(visits)); } catch { /* storage unavailable */ }
+}
+
+function noteVisit(volId, rel) {
+  if (!rel) return;                          // the drive root isn't worth marking
+  const key = `${volId}:${rel}`;
+  if (key === lastVisitKey) return;          // re-render of the same folder
+  lastVisitKey = key;
+  const v = visits[key] || { n: 0, t: 0 };
+  visits[key] = { n: v.n + 1, t: Date.now() };
+  saveVisits();
+  refreshVisitDots();
+}
+
+// 0 = never, 1..3 = increasingly hot. Counts decay with a ~30-day half-life.
+function visitLevel(volId, rel) {
+  const v = visits[`${volId}:${rel}`];
+  if (!v) return { level: 0 };
+  const ageDays = (Date.now() - v.t) / 86400000;
+  const score = v.n * Math.pow(0.5, ageDays / 30);
+  const level = score >= 6 ? 3 : score >= 2.5 ? 2 : 1;
+  const when = ageDays < 1 ? 'today' : `${Math.round(ageDays)} day${Math.round(ageDays) === 1 ? '' : 's'} ago`;
+  return { level, tip: `Opened ${v.n}× · last ${when}` };
+}
+
+function makeVisitDot(volId, rel) {
+  const dot = document.createElement('span');
+  dot.className = 'visit-dot';
+  dot.dataset.vol = volId;
+  dot.dataset.rel = rel;
+  paintVisitDot(dot);
+  return dot;
+}
+
+// How visits are marked: dots (default), emoji, or nothing. Per-viewer setting.
+const VISIT_STYLES = [
+  { key: 'dots',  name: 'Dots' },
+  { key: 'emoji', name: 'Emoji' },
+  { key: 'off',   name: 'Off' }
+];
+const VISIT_EMOJI = { 1: '\u{1F463}', 2: '\u{1F525}', 3: '\u{1F3C6}' };   // footprints, fire, trophy
+let visitStyle = (() => { try { return localStorage.getItem('diskcorder-visit-style') || 'dots'; } catch { return 'dots'; } })();
+if (!VISIT_STYLES.some(v => v.key === visitStyle)) visitStyle = 'dots';
+
+function paintVisitDot(dot) {
+  const { level, tip } = visitLevel(dot.dataset.vol, dot.dataset.rel);
+  const shown = level && visitStyle !== 'off';
+  dot.className = 'visit-dot' + (visitStyle === 'emoji' ? ' emoji' : '') + (shown ? ` lv${level}` : '');
+  dot.textContent = shown && visitStyle === 'emoji' ? VISIT_EMOJI[level] : '';
+  dot.title = shown ? tip : '';
+}
+
+function applyVisitStyle(key) {
+  visitStyle = key;
+  try { localStorage.setItem('diskcorder-visit-style', key); } catch { /* ignore */ }
+  const btn = $('visit-style-btn');
+  if (btn) btn.textContent = 'Marks: ' + VISIT_STYLES.find(v => v.key === key).name;
+  refreshVisitDots();
+}
+
+function refreshVisitDots() {
+  document.querySelectorAll('.visit-dot').forEach(paintVisitDot);
+}
+
 async function loadListing() {
   if (state.activeVolumeId == null) { clearBrowser(); return; }
   $('listing-empty').classList.add('hidden');
   saveSession();
 
   const parent = state.trail[state.trail.length - 1];
+  if (state.fileView === 'folders') noteVisit(state.activeVolumeId, parent.rel);
 
   // List + Gallery list every file under the CURRENT folder (recursively), so
   // switching views keeps you in the same place; Folders browses the tree.
@@ -718,7 +795,7 @@ function buildTreeNode(folder, depth) {
   const name = document.createElement('span');
   name.className = 'tree-name';
   name.textContent = folder.alias || folder.name;
-  row.append(tog, name);
+  row.append(tog, makeVisitDot(state.activeVolumeId, folder.rel_path), name);
 
   const kidsWrap = document.createElement('div');
   kidsWrap.className = 'tree-children hidden';
@@ -881,6 +958,7 @@ function makeFileRow(r, asSearch, showPath) {
   const nm = document.createElement('div');
   nm.className = 'nm';
   nm.textContent = r.alias || r.name;
+  if (r.is_dir) nm.prepend(makeVisitDot(volId, r.rel_path));
   if (r.alias) { const tag = document.createElement('span'); tag.className = 'alias-tag'; tag.textContent = r.name; nm.appendChild(tag); }
   if (r.note) { const dot = document.createElement('span'); dot.className = 'note-dot'; dot.title = 'Has notes'; nm.appendChild(dot); }
   label.appendChild(nm);
@@ -3353,6 +3431,11 @@ $('theme-btn').addEventListener('click', () => {
   const i = THEMES.findIndex(x => x.key === cur);
   applyTheme(THEMES[(i + 1) % THEMES.length].key);
 });
+$('visit-style-btn').addEventListener('click', () => {
+  const i = VISIT_STYLES.findIndex(v => v.key === visitStyle);
+  applyVisitStyle(VISIT_STYLES[(i + 1) % VISIT_STYLES.length].key);
+});
+applyVisitStyle(visitStyle);
 applyTheme((() => { try { return localStorage.getItem('diskcorder-theme') || 'dark'; } catch { return 'dark'; } })());
 
 // ---- Interactive Tutorial ------------------------------------------------

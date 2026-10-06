@@ -150,15 +150,88 @@ function probeDuration(src, signal) {
   });
 }
 
+// ---- smart still selection ------------------------------------------------
+// The first frame of a video is often black, a logo, or a fade. Instead, probe a
+// handful of positions with tiny grayscale frames and score each one (sharp,
+// contrasty, neither black nor blown out), then render the winner full size.
+
+const PROBE_W = 96, PROBE_H = 54;
+const PROBE_POINTS = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85];
+
+// Grab one tiny gray frame at `ts` as raw bytes (null if it can't be decoded).
+function grabGray(src, ts, signal) {
+  return new Promise(resolve => {
+    const proc = spawn(resolveFfmpeg(), [
+      '-nostdin', '-v', 'error', '-ss', String(ts), '-i', src, '-frames:v', '1',
+      '-vf', `scale=${PROBE_W}:${PROBE_H},format=gray`, '-f', 'rawvideo', 'pipe:1'
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const chunks = [];
+    const onAbort = () => { try { proc.kill('SIGKILL'); } catch {} };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const guard = setTimeout(onAbort, 20000);
+    proc.stdout.on('data', d => chunks.push(d));
+    const done = (v) => { clearTimeout(guard); if (signal) signal.removeEventListener('abort', onAbort); resolve(v); };
+    proc.on('error', () => done(null));
+    proc.on('close', () => {
+      const buf = Buffer.concat(chunks);
+      done(buf.length === PROBE_W * PROBE_H ? buf : null);
+    });
+  });
+}
+
+// Higher = a better thumbnail. Detail (edge energy) + contrast, heavily
+// discounted for near-black or near-white frames.
+function scoreFrame(px) {
+  const n = px.length;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += px[i];
+  const mean = sum / n;
+  let varSum = 0, edge = 0;
+  for (let y = 0; y < PROBE_H; y++) {
+    for (let x = 0; x < PROBE_W; x++) {
+      const v = px[y * PROBE_W + x];
+      varSum += (v - mean) * (v - mean);
+      if (x > 0) edge += Math.abs(v - px[y * PROBE_W + x - 1]);
+      if (y > 0) edge += Math.abs(v - px[(y - 1) * PROBE_W + x]);
+    }
+  }
+  const contrast = Math.sqrt(varSum / n);
+  const exposure = Math.max(0.05, Math.min(1, mean / 50, (255 - mean) / 40));
+  return (edge / n + contrast * 0.5) * exposure;
+}
+
+// Best timestamp (seconds) for a still, or 0 if it can't be decided.
+async function pickBestTimestamp(src, signal) {
+  const dur = (await probeDuration(src, signal)) || 0;
+  if (dur < 4) return 0;                        // too short to be worth probing
+  let best = 0, bestScore = -1;
+  for (const f of PROBE_POINTS) {
+    if (signal && signal.aborted) throw new Error('aborted');
+    const ts = dur * f;
+    const px = await grabGray(src, ts.toFixed(2), signal);
+    if (!px) continue;
+    const sc = scoreFrame(px);
+    if (sc > bestScore) { bestScore = sc; best = ts; }
+  }
+  return best;
+}
+
 async function generateThumb(srcPath, volumeId, entryId, signal, kind) {
   const out = thumbPath(volumeId, entryId);
   await fsp.mkdir(path.dirname(out), { recursive: true });
-  // Images and videos alike: decode the very first frame directly.
+  // Images: decode directly. Videos: render the best-scoring frame (see above).
   // Render to a temp name and rename on success, so a killed/timed-out ffmpeg
   // never leaves a truncated .jpg that hasThumb() would treat as valid.
   const tmpOut = path.join(path.dirname(out), `part-${entryId}-${process.pid}.jpg`);
   try {
-    await run(['-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', tmpOut], signal, 60000);
+    let ts = 0;
+    if (kind !== 'image') {
+      await acquireSlot(signal);
+      try { ts = await pickBestTimestamp(srcPath, signal); } catch (e) { if (e.message === 'aborted') throw e; ts = 0; }
+      finally { releaseSlot(); }
+    }
+    const seek = ts > 0 ? ['-ss', ts.toFixed(2)] : [];
+    await run([...seek, '-y', '-i', srcPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '4', tmpOut], signal, 60000);
     await fsp.rename(tmpOut, out);
   } catch (e) {
     await fsp.rm(tmpOut, { force: true }).catch(() => {});
@@ -334,7 +407,7 @@ async function removeEntry(volumeId, entryId) {
 
 module.exports = {
   init, isVideo, isImage, isMedia, ffmpegAvailable,
-  generateThumb, generatePreview,
+  generateThumb, generatePreview, pickBestTimestamp, scoreFrame,
   hasThumb, hasPreview, countThumbs, cacheSize, checkMedia, exportThumbs, importThumbs, remapCache, clearVolume, removeEntry,
   thumbPath, previewPath, dirFor,
   VIDEO_EXTS, IMAGE_EXTS, MEDIA_EXTS,

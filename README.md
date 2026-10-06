@@ -4,6 +4,15 @@
 
 <h1 align="center">Diskcorder</h1>
 
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg" /></a>
+  <img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-d4af37" />
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white" />
+  <a href="package.json"><img alt="Electron" src="https://img.shields.io/badge/Electron-42-47848F?logo=electron&logoColor=white" /></a>
+  <a href="#install"><img alt="Node 22.12+" src="https://img.shields.io/badge/Node-%E2%89%A522.12-339933?logo=node.js&logoColor=white" /></a>
+  <a href="#contributing"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" /></a>
+</p>
+
 **Map your external drives once, then browse, annotate, and rename them offline.**
 A local-first Electron + SQLite disk cataloguer for creators with footage spread
 across many USB HDDs.

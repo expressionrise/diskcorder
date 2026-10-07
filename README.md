@@ -103,6 +103,9 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   newest/oldest") and **bulk-delete** the redundant ones. Click any copy to preview it.
 - **Delete on disk** — remove the real file or folder from the detail pane, with a
   confirm step (drive must be connected).
+  > ⚠️ **Be careful: Diskcorder can permanently delete your files.** Delete, Move, Replace and the
+  > Duplicates cleanup change the real disk and skip the Recycle Bin. Every such action shows a
+  > confirmation with an orange frame. Keep backups of anything important.
 - **Open in Explorer** — jump straight to a file's real location in Windows
   Explorer from the detail pane.
 - **Export / import catalogs** — save a drive's whole catalog (with notes, aliases,
@@ -269,11 +272,19 @@ process for thumbnails, previews and media info. Diskcorder's own code stays MIT
 license text, build info and source links ship with every release (and see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
+## Portable build
+
+The portable `.exe` stores its catalog, thumbnails and settings in a `DiskcorderData` folder next to
+itself, so it can live on a USB stick. If that folder cannot be written it falls back to the
+normal per-user location. The installed version always uses your user profile. Data from the
+installed version is **not** copied automatically: to move a catalog, export it and import it
+in the other build.
+
 ## Releases and code signing
 
 Releases (installer + portable exe) are built from this repo by GitHub Actions when a
 `v*` tag is pushed — see [`.github/workflows/release.yml`](.github/workflows/release.yml).
-Code signing is being set up; until then Windows SmartScreen may warn about an unknown
+Releases are currently unsigned, so Windows SmartScreen may warn about an unknown
 publisher. Details in [CODE_SIGNING.md](CODE_SIGNING.md). Report security issues
 privately — see [SECURITY.md](SECURITY.md).
 

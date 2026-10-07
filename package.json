@@ -1,6 +1,6 @@
 {
   "name": "diskcorder",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Offline catalog for USB drives — map, annotate, preview video, rename, and copy/move between drives, all searchable when the drive is unplugged.",
   "homepage": "https://github.com/expressionrise/diskcorder#readme",
   "repository": {
@@ -22,10 +22,12 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node scripts/run-tests.js",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "dist": "electron-builder",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "smoke": "node scripts/smoke-test.js"
   },
   "author": "expressionrise",
   "license": "MIT",
@@ -47,7 +49,8 @@
     },
     "files": [
       "src/**/*",
-      "!**/*.map"
+      "!**/*.map",
+      "!node_modules/ffmpeg-static/ffmpeg*"
     ],
     "extraResources": [
       {

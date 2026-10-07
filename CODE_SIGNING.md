@@ -4,13 +4,13 @@ Windows releases of Diskcorder are built from this repository by a fully automat
 Actions workflow (`.github/workflows/release.yml`), so every released binary can be traced
 back to the source code at its tag.
 
-**Status:** code signing is being set up. Until it is active, releases are unsigned and
-Windows SmartScreen may show an "unknown publisher" warning. You can verify a build by
+**Status:** releases are currently unsigned (our SignPath Foundation application was declined for now; we plan to re-apply once the project is better known, or publish through the Microsoft Store).
+SmartScreen may show an "unknown publisher" warning. You can verify a build by
 comparing it with the source or by building it yourself (`npm run dist`).
 
 ## Planned arrangement
 
-Once approved, free code signing will be provided by [SignPath.io](https://signpath.io/),
+If approved later, free code signing will be provided by [SignPath.io](https://signpath.io/),
 with the certificate issued by the [SignPath Foundation](https://signpath.org/).
 
 - **Committers and reviewers:** the maintainers listed under

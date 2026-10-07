@@ -9,9 +9,15 @@ const scanner = require('./scanner');
 const thumbs = require('./thumbs');
 const transfer = require('./transfer');
 const backup = require('./backup');
+const { isInside, safeJoin, portableDataDir } = require('./paths');
 const { spawn } = require('child_process');
 
 let win = null;
+
+// Portable build: keep catalog, thumbnails and settings next to the exe.
+// Must run before anything reads app.getPath('userData').
+const portableDir = portableDataDir();
+if (portableDir) app.setPath('userData', portableDir);
 
 // ---- tiny argument guards (renderer is trusted, but fail loud on bugs) ----
 function assertInt(v, label = 'id') {
@@ -21,19 +27,6 @@ function assertInt(v, label = 'id') {
 function assertStr(v, label = 'value', max = 1000) {
   if (typeof v !== 'string' || v.length > max) throw new Error(`Invalid ${label}.`);
   return v;
-}
-
-// Join a catalog-relative path onto a drive root, refusing anything that would
-// land outside the root (catalog imports are untrusted: "..", absolute paths).
-function isInside(parent, child) {
-  const rel = path.relative(parent, child);
-  return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
-}
-function safeJoin(root, rel) {
-  if (!root || typeof rel !== 'string' || !rel) return null;
-  const base = path.resolve(root);
-  const full = path.resolve(base, rel);
-  return isInside(base, full) ? full : null;
 }
 
 // ---- single instance ------------------------------------------------------

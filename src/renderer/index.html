@@ -301,7 +301,7 @@
             <button id="real-rename" class="btn btn-ghost-danger">Rename on disk…</button>
             <button id="real-delete" class="btn btn-ghost-danger">Delete…</button>
           </div>
-          <span class="danger-hint">Changes the real file on disk. Drive must be connected.</span>
+          <span class="danger-hint warn">Careful: these change or permanently delete the real file on disk. Drive must be connected.</span>
         </div>
       </div>
     </aside>
@@ -322,6 +322,12 @@
            browse, and annotate what's on them <strong>even when the drive is
            unplugged</strong>. Mapping a drive records every file's name, path, size,
            and a thumbnail — the files themselves stay where they are.</p>
+
+        <div class="modal-warning"><strong>Be careful — Diskcorder can delete your files.</strong>
+          Browsing and cataloging only read from a drive, but <em>Delete</em>, <em>Move</em>,
+          <em>Replace</em> and the Duplicates cleanup change the real disk, and deleted files do not go to the
+          Recycle Bin. Diskcorder always asks for confirmation first, so read each prompt before you accept. Keep a
+          backup of anything important and try new things on a throw-away folder first.</div>
 
         <h3>Getting started</h3>
         <ul>
@@ -490,6 +496,7 @@
     <div class="modal">
       <h2 id="name-modal-title">Name this drive</h2>
       <p id="name-modal-sub" class="modal-sub"></p>
+      <div id="name-modal-warning" class="modal-warning hidden"></div>
       <input id="name-modal-input" class="field" type="text" />
       <div class="modal-actions">
         <button class="btn btn-ghost" id="name-modal-cancel">Cancel</button>
@@ -503,6 +510,7 @@
     <div class="modal">
       <h2 id="xfer-title">Copy to drive</h2>
       <p id="xfer-sub" class="modal-sub"></p>
+      <div id="xfer-warning" class="modal-warning hidden"></div>
       <label class="field-label" for="xfer-dest">Destination drive</label>
       <select id="xfer-dest" class="field"></select>
       <label class="field-label">If something with the same name exists</label>

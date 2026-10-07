@@ -8,7 +8,7 @@ Titles below match the issue titles.
 
 ## Now: v0.3.1 (post-release polish)
 
-- [ ] **Sign Windows releases with SignPath Foundation** — applied 2026-10-06, waiting for a decision _(blocked)_
+- [ ] **Sign Windows releases with SignPath Foundation** — rejected 2026-10-07 (not enough public visibility: stars, forks, external mentions); on hold, reapply once the project has gained traction _(parked)_
 - [ ] Stop shipping ffmpeg twice (shrink the installer, currently ~142 MB)
 - [ ] Portable build: keep data next to the exe
 - [ ] Automated test suite (transfer, backup, thumbnails, db) running in CI
@@ -18,6 +18,7 @@ Titles below match the issue titles.
 
 ## Next: v0.4.0
 
+- [ ] Publish to the Microsoft Store as MSIX (Microsoft signs it; needs Partner Center account, name reservation, privacy policy, store listing; after the test suite)
 - [ ] Opt-in auto-generation of thumbnails when a drive connects
 - [ ] Choose a destination subfolder for copy / move
 - [ ] Update the catalog live after copy / move

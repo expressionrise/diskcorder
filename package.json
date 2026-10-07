@@ -22,6 +22,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "dist": "electron-builder",

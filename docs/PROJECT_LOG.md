@@ -36,7 +36,9 @@ every session.
 - THIRD_PARTY_NOTICES.md (bundled FFmpeg is GPLv3, separate process), CODE_SIGNING.md,
   SECURITY.md, CONTRIBUTING.md, issue/PR templates; ffmpeg license shipped in `resources/`.
 - PRs merged `develop` -> `main` (#4, #5); release `v0.3.0` published with both exes.
-- Applied to SignPath Foundation (free OSS code signing); awaiting decision.
+- Applied to SignPath Foundation (free OSS code signing). 2026-10-07: application declined for
+  lack of public visibility (stars/forks/contributors, external mentions). They invited a reapply
+  later or a paid subscription. Decision: park signing for now; releases stay unsigned.
 
 **How it was tested** (throw-away scripts, not in the repo yet — see the test-suite ticket)
 - Electron driven through the real UI/IPC against a 2 GB USB pendrive: map drive, navigate,

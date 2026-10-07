@@ -131,7 +131,7 @@
     },
     {
       "title": "Website: realistic screenshots and expressionrise.com project card",
-      "milestone": "v0.3.1",
+      "milestone": "v0.4.0",
       "labels": ["documentation"],
       "body": "## Context\nThe screenshots on the website (`site/assets/`) were taken from synthetic test data (colored test patterns, a drive named \"Diskcorder Test Drive\").\n\n## Work\n- [ ] Retake screenshots with realistic sample content (non-copyrighted footage/photos), all three themes optional\n- [ ] Add the project card/links to https://expressionrise.com/ (snippet is in the PR notes)\n- [ ] Add repo topics: electron, sqlite, usb, video, disk-catalog\n- [ ] Link Setup and Portable downloads directly on the site"
     },

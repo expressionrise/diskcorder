@@ -620,7 +620,7 @@ html, body {
 .danger-hint.warn { color: var(--warn, #f0a828); }
 .modal h2 { margin: 0 0 6px; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
 .modal-sub { margin: 0 0 12px; color: var(--text-faint); font-size: 11px;
-  font-family: var(--mono); word-break: break-all; }
+  font-family: var(--mono); overflow-wrap: anywhere; white-space: pre-line; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; }
 .modal-wide { width: 560px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; }
 .info-btn { width: 34px; padding: 0; font-weight: 700; border-radius: 999px; }

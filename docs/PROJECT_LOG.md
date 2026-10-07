@@ -3,6 +3,31 @@
 Chronological record of what was built and decided. Newest first. Update at the end of
 every session.
 
+## 2026-10-07 — v0.3.1: safety warnings, tests, smaller and portable builds
+
+**Decisions**
+- SignPath Foundation declined the application (not enough public visibility). Signing is parked; releases stay unsigned. Plan B: publish to the Microsoft Store as MSIX (Microsoft signs it) in v0.4.0.
+- New idea agreed for v0.4.0: opt-in catalog sidecar file on drives (always ask; ask on exit only if unsaved changes).
+- GitHub issues #6-#30 created from `docs/roadmap/issues.json` (as expressionrise); closed via `Closes #N` in PRs.
+
+**Shipped in v0.3.1**
+- Warnings: orange-framed confirmations with a banner for Delete, bulk delete in Duplicates, Move and Replace; warning in About, detail pane and README. Checked visually in all three themes.
+- Automated tests (`npm test`, 41 tests, run under Electron's Node because of better-sqlite3): transfer, backup, db, thumbs, path guards, portable data dir. CI runs them.
+- `safeJoin`/`isInside` moved to `src/paths.js`.
+- Package: ffmpeg shipped once (-83 MB); portable build keeps data in `DiskcorderData` next to the exe (falls back to the user profile if not writable; data is not migrated automatically).
+- CI: Windows job builds the unpacked app and runs `scripts/smoke-test.js` (resources present, one ffmpeg, app starts).
+- Modal subtitle: long paths wrap at word boundaries and newlines are honored.
+
+**Gotchas learned**
+- better-sqlite3 is built for Electron: run tests with `ELECTRON_RUN_AS_NODE=1 electron --test` (see `scripts/run-tests.js`). Node 26 needs a glob/file list for `--test`, not a directory.
+- The test after-hooks run in registration order: register `db.close()` before the temp-dir cleanup.
+- UI check harness: seed a catalog with `db.replaceVolume` + `scanner.scan` into a throw-away userData, launch Electron with `--remote-debugging-port`, drive it over CDP (Node 26 has a global WebSocket) and use `Page.captureScreenshot`.
+- `JSON.stringify` rewrites the formatting of `package.json`/`issues.json`; edit them as text to keep diffs small.
+
+**Not done / carried over**
+- Test for the ffmpeg concurrency cap (counter not exposed).
+- Website realistic screenshots (#25) moved to v0.4.0; symlink test (#23) runs only where symlinks can be created (CI Linux).
+
 ## 2026-10-06 — v0.3.0: review, hardening, polish, release, website, signing prep
 
 **Review and fixes (full read of `src/`)**

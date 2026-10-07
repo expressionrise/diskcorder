@@ -1,6 +1,6 @@
 # Diskcorder roadmap
 
-_Last refined: 2026-10-06 · current release: **v0.3.0** · tracker: [GitHub issues](https://github.com/expressionrise/diskcorder/issues) and [milestones](https://github.com/expressionrise/diskcorder/milestones)._
+_Last refined: 2026-10-07 · current release: **v0.3.0** (v0.3.1 ready) · tracker: [GitHub issues](https://github.com/expressionrise/diskcorder/issues) and [milestones](https://github.com/expressionrise/diskcorder/milestones)._
 
 The detailed tickets live in [`docs/roadmap/issues.json`](docs/roadmap/issues.json) and are
 created on GitHub with `node scripts/create-issues.js` (re-runnable, skips existing titles).
@@ -8,16 +8,16 @@ Titles below match the issue titles.
 
 ## Now: v0.3.1 (post-release polish)
 
-- [ ] Stop shipping ffmpeg twice (shrink the installer, currently ~142 MB)
-- [ ] Portable build: keep data next to the exe
-- [ ] Automated test suite (transfer, backup, thumbnails, db) running in CI
-- [ ] Smoke-test the packaged app in CI (`electron-builder --dir`)
-- [ ] Check the orange warning frames/banners (delete, move, replace) in all three themes; decide on a one-time first-run "can delete files" notice
-- [ ] Test symbolic-link behavior and the Gallery multi-select layout
-- [ ] Website: realistic screenshots and the expressionrise.com project card (+ repo topics)
+- [x] Stop shipping ffmpeg twice (-83 MB)
+- [x] Portable build: keep data next to the exe
+- [x] Automated test suite (transfer, backup, thumbnails, db) running in CI (ffmpeg concurrency cap not covered)
+- [x] Smoke-test the packaged app in CI (`electron-builder --dir`)
+- [x] Check the orange warning frames/banners (delete, move, replace) in all three themes (a one-time first-run notice is still undecided)
+- [x] Test symbolic-link behavior (runs in CI where symlinks can be created) and the Gallery multi-select layout (checked)
 
 ## Next: v0.4.0
 
+- [ ] Website: realistic screenshots and the expressionrise.com project card (+ repo topics)
 - [ ] Publish to the Microsoft Store as MSIX (Microsoft signs it; needs Partner Center account, name reservation, privacy policy, store listing; after the test suite)
 - [ ] Save the catalog onto the drive (opt-in sidecar file; always ask, ask on exit if unsaved)
 - [ ] Opt-in auto-generation of thumbnails when a drive connects

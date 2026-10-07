@@ -146,6 +146,15 @@
       "milestone": "Backlog",
       "labels": ["enhancement", "ux", "help wanted"],
       "body": "## Context\nAll UI strings are English and inline in `renderer.js`/`index.html`.\n\n## Proposal\nExtract strings into a small dictionary (no framework), add a language switch in settings, ship Polish first.\n\n## Acceptance criteria\n- Language persists; falls back to English for missing keys\n- Contributors can add a language by adding one file"
+    },
+    {
+      "title": "Save the catalog onto the drive (opt-in sidecar file)",
+      "milestone": "v0.4.0",
+      "labels": [
+        "enhancement",
+        "ux"
+      ],
+      "body": "## Context\nThe catalog lives only in the app database. A copy stored on the drive itself would travel with it (open it on another PC) and act as a backup of notes/tags.\n\n## Proposal\n- Hidden file `.diskcorder/catalog.json` in the drive root, built from the existing export (thumbnails optional - they are large). Written to a temp file and renamed, cancelable, never destroys the previous version.\n- **Always ask** before writing to a drive (orange-framed modal, like the destructive-action warnings), after a scan/Update, plus a manual \"Save catalog to this drive\" action. \"Do not ask again for this drive\" is an explicit opt-in only.\n- **On exit**: no silent writes. If the catalog has unsaved changes and the drive is still connected, ask \"Update the catalog on X?\" with Save / Skip / Cancel. No changes = quit immediately.\n- **Conflicts**: store a timestamp + machine id; when a connected drive holds a newer catalog than the local one, ask whether to load it.\n- Handle read-only/full/missing drives with a clear message (never block quitting).\n- Update the website FAQ and README: scanning still only reads; writing the sidecar is opt-in.\n\n## Acceptance criteria\n- Nothing is written to a drive without an explicit yes\n- Interrupting a save leaves the previous catalog file intact\n- Two machines editing the same drive never silently overwrite each other\n- Tested on a throw-away drive only"
     }
   ]
 }

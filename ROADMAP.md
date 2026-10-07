@@ -20,6 +20,7 @@ Titles below match the issue titles.
 ## Next: v0.4.0
 
 - [ ] Publish to the Microsoft Store as MSIX (Microsoft signs it; needs Partner Center account, name reservation, privacy policy, store listing; after the test suite)
+- [ ] Save the catalog onto the drive (opt-in sidecar file; always ask, ask on exit if unsaved)
 - [ ] Opt-in auto-generation of thumbnails when a drive connects
 - [ ] Choose a destination subfolder for copy / move
 - [ ] Update the catalog live after copy / move

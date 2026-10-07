@@ -54,3 +54,28 @@ test('isInside is strict: not the parent itself, not a sibling', () => {
   assert.equal(isInside(ROOT, path.dirname(ROOT)), false);
   assert.equal(isInside(ROOT, ROOT + '2'), false);
 });
+
+const fs = require('fs');
+const os = require('os');
+const { portableDataDir } = require('../src/paths');
+
+test('portableDataDir is null unless running as the portable build', () => {
+  assert.equal(portableDataDir({}), null);
+});
+
+test('portableDataDir creates DiskcorderData next to the exe', (t) => {
+  const exeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'diskcorder-portable-'));
+  t.after(() => fs.rmSync(exeDir, { recursive: true, force: true }));
+  const dir = portableDataDir({ PORTABLE_EXECUTABLE_DIR: exeDir });
+  assert.equal(dir, path.join(exeDir, 'DiskcorderData'));
+  assert.ok(fs.statSync(dir).isDirectory());
+});
+
+test('portableDataDir falls back (null) when the folder is not writable', () => {
+  const failing = {
+    constants: fs.constants,
+    mkdirSync() { throw Object.assign(new Error('read-only'), { code: 'EROFS' }); },
+    accessSync() {},
+  };
+  assert.equal(portableDataDir({ PORTABLE_EXECUTABLE_DIR: ROOT }, failing), null);
+});

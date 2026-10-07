@@ -20,4 +20,21 @@ function safeJoin(root, rel) {
   return isInside(base, full) ? full : null;
 }
 
-module.exports = { isInside, safeJoin };
+// Data folder for the electron-builder "portable" target: next to the exe, so the
+// app can live on a USB stick with its catalog. Returns null when not running as
+// portable, or when that folder cannot be written (then the normal per-user
+// location is used instead).
+function portableDataDir(env = process.env, fsImpl = require('fs')) {
+  const exeDir = env.PORTABLE_EXECUTABLE_DIR;
+  if (!exeDir) return null;
+  const dir = path.join(exeDir, 'DiskcorderData');
+  try {
+    fsImpl.mkdirSync(dir, { recursive: true });
+    fsImpl.accessSync(dir, fsImpl.constants.W_OK);
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { isInside, safeJoin, portableDataDir };

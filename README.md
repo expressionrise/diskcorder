@@ -272,6 +272,14 @@ process for thumbnails, previews and media info. Diskcorder's own code stays MIT
 license text, build info and source links ship with every release (and see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
+## Portable build
+
+The portable `.exe` stores its catalog, thumbnails and settings in a `DiskcorderData` folder next to
+itself, so it can live on a USB stick. If that folder cannot be written it falls back to the
+normal per-user location. The installed version always uses your user profile. Data from the
+installed version is **not** copied automatically: to move a catalog, export it and import it
+in the other build.
+
 ## Releases and code signing
 
 Releases (installer + portable exe) are built from this repo by GitHub Actions when a

@@ -9,10 +9,15 @@ const scanner = require('./scanner');
 const thumbs = require('./thumbs');
 const transfer = require('./transfer');
 const backup = require('./backup');
-const { isInside, safeJoin } = require('./paths');
+const { isInside, safeJoin, portableDataDir } = require('./paths');
 const { spawn } = require('child_process');
 
 let win = null;
+
+// Portable build: keep catalog, thumbnails and settings next to the exe.
+// Must run before anything reads app.getPath('userData').
+const portableDir = portableDataDir();
+if (portableDir) app.setPath('userData', portableDir);
 
 // ---- tiny argument guards (renderer is trusted, but fail loud on bugs) ----
 function assertInt(v, label = 'id') {

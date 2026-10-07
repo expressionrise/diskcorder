@@ -103,6 +103,9 @@ notes and aliases, in a single local database. Nothing leaves your machine.
   newest/oldest") and **bulk-delete** the redundant ones. Click any copy to preview it.
 - **Delete on disk** — remove the real file or folder from the detail pane, with a
   confirm step (drive must be connected).
+  > ⚠️ **Be careful: Diskcorder can permanently delete your files.** Delete, Move, Replace and the
+  > Duplicates cleanup change the real disk and skip the Recycle Bin. Every such action shows a
+  > confirmation with an orange frame. Keep backups of anything important.
 - **Open in Explorer** — jump straight to a file's real location in Windows
   Explorer from the detail pane.
 - **Export / import catalogs** — save a drive's whole catalog (with notes, aliases,

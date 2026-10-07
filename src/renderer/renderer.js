@@ -1828,7 +1828,7 @@ $('real-delete').addEventListener('click', async () => {
   const ok = await promptModal({
     title: `Delete “${e.alias || e.name}”?`,
     sub: `${e.rel_path}\nThis permanently deletes the real ${e.is_dir ? 'folder and everything in it' : 'file'} from disk. The drive must be connected.`,
-    confirmText: 'Delete', input: false, danger: true
+    confirmText: 'Delete', input: false, danger: true, warn: DELETE_WARNING
   });
   if (!ok) return;
   const res = await api.realDelete(e.id);
@@ -2532,14 +2532,22 @@ api.onTransferProgress(({ opId, name, copied, total, state: st, error }) => {
   }
 });
 
+const DELETE_WARNING = 'Be careful: this deletes the real file from the disk. It does not go to the Recycle Bin and cannot be undone.';
+
 // ---- reusable prompt / confirm modal ------------------------------------
 // Electron has no window.prompt; this drives the #name-modal markup for both
 // text entry (input:true -> resolves string|null) and confirmation
 // (input:false -> resolves boolean).
 
-function promptModal({ title, sub = '', value = '', confirmText = 'OK', input = true, danger = false }) {
+// `warn` (string) adds the orange frame and a warning banner; use it for every
+// action that deletes or overwrites real files.
+function promptModal({ title, sub = '', value = '', confirmText = 'OK', input = true, danger = false, warn = '' }) {
   return new Promise((resolve) => {
     const backdrop = $('name-modal');
+    const box = backdrop.firstElementChild;
+    box.classList.toggle('warn', !!warn);
+    $('name-modal-warning').textContent = warn;
+    $('name-modal-warning').classList.toggle('hidden', !warn);
     const inputEl = $('name-modal-input');
     const confirmBtn = $('name-modal-confirm');
     const cancelBtn = $('name-modal-cancel');
@@ -2560,6 +2568,7 @@ function promptModal({ title, sub = '', value = '', confirmText = 'OK', input = 
 
     function cleanup(result) {
       backdrop.classList.add('hidden');
+      box.classList.remove('warn');
       confirmBtn.classList.remove('btn-danger');
       confirmBtn.removeEventListener('click', onConfirm);
       cancelBtn.removeEventListener('click', onCancel);
@@ -2595,6 +2604,23 @@ function transferModal({ entry, targets, move }) {
     confirmBtn.textContent = move ? 'Move' : 'Copy';
     confirmBtn.classList.toggle('btn-danger', !!move);
 
+    // Orange frame whenever this transfer can destroy files: a move deletes
+    // the original, "Replace" overwrites what is already at the destination.
+    const box = backdrop.firstElementChild;
+    const warnEl = $('xfer-warning');
+    const radios = backdrop.querySelectorAll('input[name="xfer-conflict"]');
+    const updateWarn = () => {
+      const replace = backdrop.querySelector('input[name="xfer-conflict"]:checked').value === 'replace';
+      const parts = [];
+      if (move) parts.push('The original is deleted from the source drive after the copy (no Recycle Bin).');
+      if (replace) parts.push('Existing files with the same name on the destination are overwritten.');
+      warnEl.textContent = parts.length ? 'Be careful: ' + parts.join(' ') : '';
+      warnEl.classList.toggle('hidden', !parts.length);
+      box.classList.toggle('warn', !!parts.length);
+    };
+    radios.forEach(r => r.addEventListener('change', updateWarn));
+    updateWarn();
+
     sel.innerHTML = '';
     for (const t of targets) {
       const o = document.createElement('option');
@@ -2607,6 +2633,8 @@ function transferModal({ entry, targets, move }) {
 
     function cleanup(result) {
       backdrop.classList.add('hidden');
+      box.classList.remove('warn');
+      radios.forEach(r => r.removeEventListener('change', updateWarn));
       confirmBtn.classList.remove('btn-danger');
       confirmBtn.removeEventListener('click', onConfirm);
       cancelBtn.removeEventListener('click', onCancel);
@@ -3022,7 +3050,7 @@ async function deleteSelectedDuplicates() {
   const ok = await promptModal({
     title: `Delete ${ids.length} selected cop${ids.length === 1 ? 'y' : 'ies'}?`,
     sub: `This permanently deletes ${ids.length} real file${ids.length === 1 ? '' : 's'} from disk (${humanFileSize(bytes)}). This cannot be undone.`,
-    confirmText: `Delete ${ids.length}`, input: false, danger: true
+    confirmText: `Delete ${ids.length}`, input: false, danger: true, warn: DELETE_WARNING
   });
   if (!ok) return;
 
@@ -3040,7 +3068,7 @@ async function deleteDuplicate(it, copies) {
   const ok = await promptModal({
     title: 'Delete this copy?',
     sub: `${it.volume_name} · ${it.rel_path}\nThis permanently deletes the real file. ${copies - 1} copy(ies) will remain.`,
-    confirmText: 'Delete', input: false, danger: true
+    confirmText: 'Delete', input: false, danger: true, warn: DELETE_WARNING
   });
   if (!ok) return;
   const res = await api.realDelete(it.id);

@@ -8,7 +8,6 @@ Titles below match the issue titles.
 
 ## Now: v0.3.1 (post-release polish)
 
-- [ ] **Sign Windows releases with SignPath Foundation** — rejected 2026-10-07 (not enough public visibility: stars, forks, external mentions); on hold, reapply once the project has gained traction _(parked)_
 - [ ] Stop shipping ffmpeg twice (shrink the installer, currently ~142 MB)
 - [ ] Portable build: keep data next to the exe
 - [ ] Automated test suite (transfer, backup, thumbnails, db) running in CI
@@ -31,6 +30,7 @@ Titles below match the issue titles.
 
 ## Backlog
 
+- [ ] **Sign Windows releases** — SignPath Foundation declined 2026-10-07 (visibility); re-apply later or use a paid plan _(parked)_
 - [ ] Faster search for very large catalogs (FTS5 / trigram)
 - [ ] Recognize drives by volume serial number
 - [ ] Replace blocking `fs.existsSync` calls in IPC handlers

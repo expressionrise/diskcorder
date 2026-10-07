@@ -17,9 +17,9 @@
   "issues": [
     {
       "title": "Sign Windows releases with SignPath Foundation",
-      "milestone": "v0.3.1",
+      "milestone": "Backlog",
       "labels": ["release", "blocked"],
-      "body": "## Context\nWe applied to the SignPath Foundation (free code signing for OSS) on 2026-10-06 and are waiting for a decision. Releases are currently unsigned, so Windows SmartScreen shows an \"unknown publisher\" warning.\n\n## Work\n- [ ] Wait for the approval e-mail and answer any follow-up questions\n- [ ] Add the SignPath integration (organization/project ids as variables, API token in GitHub Secrets) in `.github/workflows/release.yml` at the `TODO(code signing)` step\n- [ ] Update `CODE_SIGNING.md`, README and the website (remove \"being set up\"; add the required SignPath attribution)\n- [ ] Cut a signed release (v0.3.1) and verify the signature on the installer and the portable exe\n\n## Acceptance criteria\n- Setup and Portable exes in the GitHub Release are signed by SignPath Foundation\n- SmartScreen no longer says \"unknown publisher\" for the signed binaries (reputation may still take time)\n\n## Notes\nThe bundled ffmpeg is GPLv3 (separate process); see `THIRD_PARTY_NOTICES.md`."
+      "body": "## Context\nWe applied to the SignPath Foundation (free code signing for OSS) on 2026-10-06. It was **declined on 2026-10-07**: the project does not yet show enough public visibility (GitHub stars/forks/contributors, external articles or discussions). They welcome a re-application later, or a paid SignPath subscription (https://docs.signpath.io/change-subscription). Releases stay unsigned (SmartScreen shows \"unknown publisher\") until then. The Microsoft Store (MSIX) is the alternative that needs no certificate.\n\n## Work (when we revisit)\n- [ ] Re-apply once the project has gained traction (stars, forks, mentions)\n- [ ] Or evaluate the paid subscription\n- [ ] Add the SignPath integration in `.github/workflows/release.yml` at the `TODO(code signing)` step\n- [ ] Update `CODE_SIGNING.md`, README and the website\n\n## Acceptance criteria\n- Setup and Portable exes in the GitHub Release are signed\n\n## Notes\nThe bundled ffmpeg is GPLv3 (separate process); see `THIRD_PARTY_NOTICES.md`."
     },
     {
       "title": "Stop shipping ffmpeg twice (shrink the installer)",
@@ -155,6 +155,24 @@
         "ux"
       ],
       "body": "## Context\nThe catalog lives only in the app database. A copy stored on the drive itself would travel with it (open it on another PC) and act as a backup of notes/tags.\n\n## Proposal\n- Hidden file `.diskcorder/catalog.json` in the drive root, built from the existing export (thumbnails optional - they are large). Written to a temp file and renamed, cancelable, never destroys the previous version.\n- **Always ask** before writing to a drive (orange-framed modal, like the destructive-action warnings), after a scan/Update, plus a manual \"Save catalog to this drive\" action. \"Do not ask again for this drive\" is an explicit opt-in only.\n- **On exit**: no silent writes. If the catalog has unsaved changes and the drive is still connected, ask \"Update the catalog on X?\" with Save / Skip / Cancel. No changes = quit immediately.\n- **Conflicts**: store a timestamp + machine id; when a connected drive holds a newer catalog than the local one, ask whether to load it.\n- Handle read-only/full/missing drives with a clear message (never block quitting).\n- Update the website FAQ and README: scanning still only reads; writing the sidecar is opt-in.\n\n## Acceptance criteria\n- Nothing is written to a drive without an explicit yes\n- Interrupting a save leaves the previous catalog file intact\n- Two machines editing the same drive never silently overwrite each other\n- Tested on a throw-away drive only"
+    },
+    {
+      "title": "Publish to the Microsoft Store (MSIX)",
+      "milestone": "v0.4.0",
+      "labels": [
+        "release",
+        "enhancement"
+      ],
+      "body": "## Context\nSignPath declined us for now (see the signing issue). Packages submitted to the Microsoft Store are signed by Microsoft, so no own certificate is needed, and SmartScreen does not warn for Store installs.\n\n## Work\n- [ ] Create a Partner Center developer account (individual; check current fee) and reserve the app name\n- [ ] Add an `appx` (MSIX) target to electron-builder with the identity name/publisher from Partner Center; `runFullTrust` so external drives stay accessible\n- [ ] Build the MSIX in `release.yml` next to Setup and Portable\n- [ ] Privacy policy (everything stays local), store listing, screenshots, age rating\n- [ ] Mention the bundled GPLv3 ffmpeg in the listing and `THIRD_PARTY_NOTICES.md`\n- [ ] Pass certification and verify install/update/uninstall\n\n## Acceptance criteria\n- Diskcorder installs from the Microsoft Store and can read/write external drives\n- Do this after the automated test suite is in place"
+    },
+    {
+      "title": "Check the delete/move/replace warning frames in all themes",
+      "milestone": "v0.3.1",
+      "labels": [
+        "ux",
+        "testing"
+      ],
+      "body": "## Context\nDelete, Move and Replace confirmations now have an orange frame and a warning banner (`.modal.warn`, `.modal-warning`, token `--warn` with fallback `#f0a828`); the About window and the detail pane also warn that the app can delete files. Not yet checked visually.\n\n## Work\n- [ ] Open every destructive confirmation (Delete, bulk delete in Duplicates, Move, Copy + Replace) in the dark, blue and light themes; fix contrast of the frame/banner text\n- [ ] Decide whether to add a one-time first-run notice that the app can delete files\n\n## Acceptance criteria\n- Banner text meets 4.5:1 in all three themes; nothing destructive lacks the orange frame"
     }
   ]
 }

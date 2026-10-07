@@ -276,7 +276,7 @@ license text, build info and source links ship with every release (and see
 
 Releases (installer + portable exe) are built from this repo by GitHub Actions when a
 `v*` tag is pushed — see [`.github/workflows/release.yml`](.github/workflows/release.yml).
-Code signing is being set up; until then Windows SmartScreen may warn about an unknown
+Releases are currently unsigned, so Windows SmartScreen may warn about an unknown
 publisher. Details in [CODE_SIGNING.md](CODE_SIGNING.md). Report security issues
 privately — see [SECURITY.md](SECURITY.md).
 

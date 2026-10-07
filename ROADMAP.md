@@ -13,6 +13,7 @@ Titles below match the issue titles.
 - [ ] Portable build: keep data next to the exe
 - [ ] Automated test suite (transfer, backup, thumbnails, db) running in CI
 - [ ] Smoke-test the packaged app in CI (`electron-builder --dir`)
+- [ ] Check the orange warning frames/banners (delete, move, replace) in all three themes; decide on a one-time first-run "can delete files" notice
 - [ ] Test symbolic-link behavior and the Gallery multi-select layout
 - [ ] Website: realistic screenshots and the expressionrise.com project card (+ repo topics)
 

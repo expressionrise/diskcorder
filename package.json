@@ -26,7 +26,8 @@
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "dist": "electron-builder",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "smoke": "node scripts/smoke-test.js"
   },
   "author": "expressionrise",
   "license": "MIT",

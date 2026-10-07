@@ -48,7 +48,8 @@
     },
     "files": [
       "src/**/*",
-      "!**/*.map"
+      "!**/*.map",
+      "!node_modules/ffmpeg-static/ffmpeg*"
     ],
     "extraResources": [
       {
